@@ -268,8 +268,12 @@ function tile(card) {
     ),
     h('div', { class: 'pills' }, variants.map((v) => {
       const n = copiesOf(card, v).length;
-      return h('button', { class: `pill${n ? ' owned' : ''}`, title: n ? `${v}: ${n} owned` : `${v}: missing`, onclick: () => clickVariant(card, v) },
-        v, n > 1 ? ` ×${n}` : '');
+      return h('div', { class: `pill${n ? ' owned' : ''}`, 'data-variant': v },
+        h('button', { class: 'step', title: `Remove a ${v} copy`, 'aria-label': `Remove a ${v} copy`, disabled: !n, onclick: () => removeCopy(card, v) }, '−'),
+        h('button', { class: 'label', title: `${v}: ${n ? `${n} owned` : 'missing'} (click for details)`, onclick: () => openCard(card) },
+          v, n ? ` ×${n}` : ''),
+        h('button', { class: 'step', title: `Add a ${v} copy`, 'aria-label': `Add a ${v} copy`, onclick: () => addCopy(card, v) }, '+'),
+      );
     })),
   );
 }
@@ -320,11 +324,17 @@ function clickArt(card) {
   openCard(card);
 }
 
-function clickVariant(card, variant) {
+function addCopy(card, variant) {
+  return saveEntry(card, (e) => { (e.variants[variant] ??= []).push(newCopy()); });
+}
+
+// Removes the newest untouched copy first; only prompts if every copy has recorded details.
+function removeCopy(card, variant) {
   const copies = copiesOf(card, variant);
-  if (copies.length === 0) return saveEntry(card, (e) => { e.variants[variant] = [newCopy()]; });
-  if (copies.length === 1 && isPlain(copies[0])) return saveEntry(card, (e) => { delete e.variants[variant]; });
-  openCard(card);
+  if (!copies.length) return;
+  const target = [...copies].reverse().find(isPlain) ?? copies.at(-1);
+  if (!isPlain(target) && !confirm(`Remove a ${variant} copy and its recorded details?`)) return;
+  return saveEntry(card, (e) => { e.variants[variant] = e.variants[variant].filter((x) => x.id !== target.id); });
 }
 
 // ---------- card detail modal ----------

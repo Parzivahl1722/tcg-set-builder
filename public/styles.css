@@ -164,9 +164,14 @@ main { max-width: 1400px; margin: 0 auto; padding: 16px; }
 .info { padding: 0 8px; background: transparent; border-color: var(--border); color: var(--text); line-height: 18px; }
 .pills { display: flex; flex-wrap: wrap; gap: 4px; }
 .pill {
-  font-size: 11px; padding: 2px 7px; border-radius: 10px;
+  display: inline-flex; align-items: stretch; font-size: 11px; border-radius: 10px; overflow: hidden;
   background: transparent; border: 1px dashed var(--border); color: var(--muted);
 }
+.pill button { background: transparent; border: 0; color: inherit; font-size: inherit; padding: 2px 6px; border-radius: 0; line-height: 1.4; }
+.pill .label { padding: 2px 4px; }
+.pill .step { font-weight: 700; min-width: 20px; }
+.pill .step:hover:not(:disabled) { background: var(--owned-soft); color: var(--text); }
+.pill .step:disabled { opacity: .35; cursor: default; }
 .pill.owned { background: var(--owned-soft); border: 1px solid var(--owned); color: var(--text); }
 
 /* modal */
