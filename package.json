@@ -1,0 +1,30 @@
+{
+  "name": "tcg-set-builder",
+  "version": "1.0.0",
+  "description": "Local master-set tracker for Pokémon and Lorcana",
+  "main": "server/index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node --test test/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parzivahl1722/tcg-set-builder.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Parzivahl1722/tcg-set-builder/issues"
+  },
+  "homepage": "https://github.com/Parzivahl1722/tcg-set-builder#readme",
+  "dependencies": {
+    "express": "^4.22.3"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "private": true
+}
