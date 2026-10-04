@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TCG Set Builder</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">TCG Set Builder</a>
+    <nav id="game-tabs" class="tabs"></nav>
+    <a class="export" href="/api/export" title="Download a backup of your collection">Export backup</a>
+  </header>
+  <main id="view"></main>
+  <dialog id="modal"><div id="modal-body"></div></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
