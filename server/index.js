@@ -10,7 +10,8 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dataDir = path.resolve(process.env.DATA_DIR ?? path.join(root, 'data'));
 const port = Number(process.env.PORT ?? 3000);
 
-const store = await createStore(path.join(dataDir, 'collection.json'));
+const backupKeep = Number.isFinite(Number(process.env.BACKUP_KEEP)) ? Number(process.env.BACKUP_KEEP) : 30;
+const store = await createStore(path.join(dataDir, 'collection.json'), { backupKeep });
 const cache = createCache(path.join(dataDir, 'cache'));
 const app = createApp({ sources: { pokemon, lorcana }, cache, store });
 
@@ -18,4 +19,5 @@ const app = createApp({ sources: { pokemon, lorcana }, cache, store });
 app.listen(port, '127.0.0.1', () => {
   console.log(`TCG Set Builder running at http://localhost:${port}`);
   console.log(`Collection file: ${path.join(dataDir, 'collection.json')}`);
+  console.log(backupKeep > 0 ? `Daily backups: ${path.join(dataDir, 'backups')} (keeping ${backupKeep})` : 'Daily backups: off');
 });

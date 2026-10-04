@@ -36,7 +36,9 @@ The databases don't track everything collectors care about (Poké Ball and Maste
 
 ## Your data
 
-- `data/collection.json` is your collection. **Back it up.** The **Export backup** link downloads a copy. `data/` is git-ignored on purpose, so it is not saved to GitHub.
+- `data/collection.json` is your collection. Every click saves to it immediately. `data/` is git-ignored on purpose, so it is not saved to GitHub.
+- `data/backups/` gets a dated copy (`collection-YYYY-MM-DD.json`) the first time you change anything each day. It holds the collection as it was *before* that day's edits. The newest 30 are kept; set `BACKUP_KEEP` to change that, or `0` to turn backups off. To restore, stop the app and copy a backup over `collection.json`.
+- Backups sit on the same disk as the collection, so they protect against mistakes, not a dead laptop. For that, point `DATA_DIR` at a synced folder (`DATA_DIR=~/Dropbox/tcg npm start`) or use **Export backup** now and then.
 - `data/cache/` holds downloaded card lists. Delete it any time; it re-downloads. Use **Refresh cards** on a set to pull updates.
 - Set `DATA_DIR` to keep data somewhere else (for example a synced Dropbox or iCloud folder), and `PORT` to change the port.
 - Optional: set `POKEMONTCG_API_KEY` ([free key](https://dev.pokemontcg.io)) for higher Pokémon API rate limits.
