@@ -13,6 +13,8 @@ npm start
 
 Open http://localhost:3000.
 
+On a Mac you can instead double-click `start.command`. It installs dependencies on first run, starts the app, and opens your browser. Drag it to the Dock or make an alias on the Desktop for a one-click shortcut. Closing its Terminal window stops the app.
+
 ## How it works
 
 - **Click a card** to add one copy and turn it color. Click again to remove it. If that copy has details recorded (grade, price, notes), clicking opens the detail panel instead, so a misclick can't delete it.
