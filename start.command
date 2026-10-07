@@ -23,5 +23,18 @@ if nc -z 127.0.0.1 "$PORT" >/dev/null 2>&1; then
   exit 0
 fi
 
+# Keep the collection outside the repo so re-cloning or deleting the project folder can't lose it.
+# Override with DATA_DIR (for example a synced iCloud or Dropbox folder).
+export DATA_DIR="${DATA_DIR:-$HOME/TCG Set Builder Data}"
+mkdir -p "$DATA_DIR" || exit 1
+
+# One-time migration: copy (never move) an existing in-repo collection into the new folder.
+if [ ! -f "$DATA_DIR/collection.json" ] && [ -f data/collection.json ]; then
+  cp data/collection.json "$DATA_DIR/collection.json"
+  [ -d data/backups ] && cp -R data/backups "$DATA_DIR/backups"
+  echo "Copied your existing collection from $PWD/data to $DATA_DIR (the original is untouched)."
+fi
+echo "Collection folder: $DATA_DIR"
+
 (sleep 2; open "http://localhost:$PORT") &
 PORT="$PORT" npm start
