@@ -1,5 +1,7 @@
 import { getJson } from '../http.js';
-import { normArtist } from '../collection.js';
+import { artistMatches } from '../collection.js';
+
+export { artistMatches };
 
 const API = 'https://api.pokemontcg.io/v2';
 // Same data as the API, published by the PokemonTCG project. Used when the API is down.
@@ -68,12 +70,6 @@ export function normArtistCard(c, set = c.set) {
     setName: set?.name ?? null,
     releaseDate: set?.releaseDate ? set.releaseDate.replaceAll('/', '-') : null,
   };
-}
-
-// Collaboration cards list several artists in one string, so match on containment, not equality.
-export function artistMatches(cardArtist, wanted) {
-  const w = normArtist(wanted);
-  return !!w && normArtist(cardArtist).includes(w);
 }
 
 export async function fetchSets() {

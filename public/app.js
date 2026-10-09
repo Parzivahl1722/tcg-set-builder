@@ -165,6 +165,9 @@ function renderHome(game) {
 
 // ---------- artists ----------
 
+// replaceChildren would print "null" for an omitted section.
+const show = (...nodes) => view.replaceChildren(...nodes.filter(Boolean));
+
 async function showArtists(game) {
   view.replaceChildren(h('p', { class: 'loading' }, 'Loading artists…'));
   const data = await api(`/api/games/${game}/artists`);
@@ -176,7 +179,7 @@ async function showArtists(game) {
     data.notInOpenedSets ? `${data.notInOpenedSets} owned card(s) are in sets you haven’t opened, so their artists aren’t listed.` : null,
     data.noArtist ? `${data.noArtist} owned card(s) have no artist in the database.` : null,
   ].filter(Boolean);
-  view.replaceChildren(
+  show(
     h('a', { href: `#/game/${game}`, class: 'back' }, '← All sets'),
     h('h1', {}, 'Collection by artist'),
     h('div', { class: 'toolbar' }, input, h('button', { onclick: go }, 'Look up')),
@@ -189,9 +192,37 @@ async function showArtists(game) {
   );
 }
 
-const artistView = { filter: 'all' };
+const artistView = { filter: 'all', notice: [] };
+
+// The card database leaves the artist blank for some sets. This assigns cards to an artist by hand.
+function addCardsPanel(game, name, artist) {
+  const box = h('textarea', { rows: 5, placeholder: 'One per line, e.g.\nStellar Crown #91\nSurging Sparks 73\nsv7-91' });
+  const submit = async () => {
+    if (!box.value.trim()) return;
+    try {
+      const r = await api(`/api/games/${game}/artists/${encodeURIComponent(name)}/cards`, { method: 'POST', body: JSON.stringify({ cards: box.value }) });
+      artistView.notice = [
+        r.added.length ? `Added ${r.added.length}: ${r.added.map((c) => `${c.name} (${c.setName} #${c.number})`).join(', ')}.` : null,
+        ...r.conflicts.map((c) => `${c.name} (${c.id}) is credited to ${c.databaseArtist} in the database. Your assignment overrides it.`),
+        ...r.unresolved.map((u) => `Couldn’t add “${u.line}”: ${u.reason}.`),
+      ].filter(Boolean);
+      await showArtist(game, name);
+    } catch (err) { toast(err.message, true); }
+  };
+  return h('details', { class: 'add-cards' },
+    h('summary', {}, `Add cards the database doesn’t credit to ${artist}`),
+    h('p', { class: 'muted' }, 'Check the printed illustrator credit on the card before adding. Matches the set by name or id, then the card number.'),
+    box,
+    h('div', { class: 'row' }, h('button', { onclick: submit }, 'Add to this artist')),
+  );
+}
+
+async function setCardArtist(game, cardId, artist) {
+  return api(`/api/games/${game}/cards/${encodeURIComponent(cardId)}/artist`, { method: 'PUT', body: JSON.stringify({ artist }) });
+}
 
 async function showArtist(game, name, refresh = false) {
+  if (artistView.name !== name) { artistView.notice = []; artistView.name = name; }
   view.replaceChildren(h('p', { class: 'loading' }, `Looking up ${name}… (first lookup can take a minute)`));
   const data = await api(`/api/games/${game}/artists/${encodeURIComponent(name)}${refresh ? '?refresh=1' : ''}`);
   const { summary: sm } = data;
@@ -204,7 +235,7 @@ async function showArtist(game, name, refresh = false) {
   }
   const filters = [['all', 'All'], ['owned', 'Owned'], ['missing', 'Missing']];
   const redraw = () => showArtist(game, name);
-  view.replaceChildren(
+  show(
     h('div', { class: 'set-header' },
       h('a', { href: `#/game/${game}/artists`, class: 'back' }, '← Artists'),
       h('h1', {}, data.cards.find((c) => c.artist?.toLowerCase() === data.artist.toLowerCase())?.artist ?? data.artist),
@@ -214,6 +245,9 @@ async function showArtist(game, name, refresh = false) {
             h('div', { class: 'stat-line' }, h('span', {}, `${sm.copies} copies`), h('span', {}, `Paid ${money(sm.paid)}`), h('span', {}, `Value ${money(sm.value)}`)))
         : h('p', { class: 'muted' }, 'No cards found for that name. Check the spelling, or try a shorter form.'),
     ),
+    artistView.notice.length ? h('div', { class: 'notice' }, artistView.notice.map((n) => h('p', {}, n))) : null,
+    data.unresolved?.length ? h('div', { class: 'notice' }, h('p', {}, `${data.unresolved.length} card(s) you assigned here couldn’t be loaded right now: ${data.unresolved.join(', ')}.`)) : null,
+    addCardsPanel(game, name, data.artist),
     h('div', { class: 'toolbar' },
       h('div', { class: 'segmented' }, filters.map(([id, label]) =>
         h('button', { class: artistView.filter === id ? 'active' : null, onclick: () => { artistView.filter = id; redraw(); } }, label))),
@@ -224,7 +258,11 @@ async function showArtist(game, name, refresh = false) {
       h('div', { class: 'grid' }, g.cards.map((c) => h('div', { class: `tile ${c.owned ? 'complete' : 'missing'}` },
         h('a', { class: 'art', href: g.id ? `#/game/${game}/set/${encodeURIComponent(g.id)}` : null, title: c.owned ? 'Owned' : 'Missing' },
           cardImage(c), c.owned ? h('span', { class: 'badge' }, c.copies > 1 ? `×${c.copies}` : '✓') : null),
-        h('div', { class: 'meta' }, h('span', { class: 'num' }, `#${c.number}`), h('span', { class: 'name', title: c.name }, c.name)))))),
+        h('div', { class: 'meta' }, h('span', { class: 'num' }, `#${c.number}`), h('span', { class: 'name', title: c.name }, c.name),
+          c.overridden ? h('button', {
+            class: 'link', title: 'Assigned by you. Click to remove.',
+            onclick: () => setCardArtist(game, c.id, '').then(() => showArtist(game, name)).catch((e) => toast(e.message, true)),
+          }, 'remove') : null))))),
     ),
   );
 }
@@ -414,6 +452,27 @@ function openCard(card) {
   if (!modal.open) modal.showModal();
 }
 
+function artistRow(card) {
+  const { game } = state.current;
+  if (!state.meta.games.find((g) => g.id === game)?.artists) return null;
+  const overrides = (state.current.artistOverrides ??= {});
+  const mine = overrides[card.id];
+  const input = h('input', { value: mine ?? '', placeholder: card.artist ? 'Correct the artist' : 'Artist (not in database)', maxlength: 100 });
+  const save = async (value) => {
+    try {
+      const { artist } = await setCardArtist(game, card.id, value);
+      if (artist) overrides[card.id] = artist; else delete overrides[card.id];
+      renderCardModal(card);
+      toast(artist ? 'Artist saved' : 'Artist cleared');
+    } catch (err) { toast(err.message, true); }
+  };
+  return h('div', { class: 'artist-row' },
+    h('span', { class: 'muted' }, mine ? `Artist: ${mine} (set by you)` : card.artist ? `Artist: ${card.artist}` : 'Artist: not in database'),
+    h('div', { class: 'row' }, input, h('button', { class: 'small', onclick: () => save(input.value) }, 'Save'),
+      mine ? h('button', { class: 'ghost small', onclick: () => save('') }, 'Clear') : null),
+  );
+}
+
 function renderCardModal(card) {
   const entry = state.current.entries[card.id] ?? blankEntry();
   const variants = variantsOf(card);
@@ -476,7 +535,7 @@ function renderCardModal(card) {
 
   modalBody.replaceChildren(
     h('div', { class: 'modal-head' },
-      h('div', {}, h('h2', {}, card.name), h('div', { class: 'muted' }, `#${card.number} · ${card.rarity}`)),
+      h('div', {}, h('h2', {}, card.name), h('div', { class: 'muted' }, `#${card.number} · ${card.rarity}`), artistRow(card)),
       h('button', { class: 'ghost close', onclick: () => modal.close(), 'aria-label': 'Close' }, '✕'),
     ),
     h('div', { class: 'modal-grid' },

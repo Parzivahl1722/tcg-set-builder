@@ -50,3 +50,16 @@ test('setProgress counts cards, variants, copies and money', () => {
   const withRule = setProgress([common, ex], entries, [{ name: 'Poké Ball Reverse', rarities: ['Common'] }]);
   assert.equal(withRule.variants, 4);
 });
+
+test('parseCardRef reads pasted card references', async () => {
+  const { parseCardRef, sameNumber, artistMatches } = await import('../server/collection.js');
+  assert.deepEqual(parseCardRef('sv7-91'), { id: 'sv7-91' });
+  assert.deepEqual(parseCardRef('Stellar Crown #091/142'), { set: 'Stellar Crown', number: '091' });
+  assert.deepEqual(parseCardRef('Surging Sparks 73'), { set: 'Surging Sparks', number: '73' });
+  assert.deepEqual(parseCardRef('Surging Sparks: (#073/191)'), { set: 'Surging Sparks', number: '073' });
+  assert.deepEqual(parseCardRef('svp-118'), { id: 'svp-118' });
+  assert.equal(parseCardRef(''), null);
+  assert.equal(parseCardRef('garbage'), null);
+  assert.ok(sameNumber('091', '91') && sameNumber('tg01', 'TG01') && !sameNumber('91', '19'));
+  assert.ok(artistMatches('A, Shimaris Yukichi', 'shimaris  yukichi'));
+});

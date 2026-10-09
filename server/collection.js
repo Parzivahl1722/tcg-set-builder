@@ -89,6 +89,27 @@ export function normArtist(name) {
   return String(name ?? '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+// Collaboration cards list several artists in one string, so match on containment, not equality.
+export function artistMatches(cardArtist, wanted) {
+  const w = normArtist(wanted);
+  return !!w && normArtist(cardArtist).includes(w);
+}
+
+export const sanitizeArtist = (v) => str(v, 100);
+
+// Splits a pasted line such as "Stellar Crown #091/142", "Stellar Crown 91" or "sv7-91" into
+// { id } (a card id) or { set, number } (a set id or name, plus a card number). Returns null if unreadable.
+export function parseCardRef(line) {
+  const text = String(line ?? '').replace(/[()\[\]]/g, ' ').trim();
+  if (!text) return null;
+  if (/^[A-Za-z0-9.]+-[A-Za-z0-9]+$/.test(text)) return { id: text };
+  const m = text.match(/^(.+?)[\s#:,-]+#?\s*([A-Za-z]{0,4}\d+[A-Za-z]?)(?:\s*\/\s*\d+)?$/);
+  return m ? { set: m[1].trim(), number: m[2] } : null;
+}
+
+export const sameNumber = (a, b) =>
+  String(a).replace(/^0+(?=\d)/, '').toLowerCase() === String(b).replace(/^0+(?=\d)/, '').toLowerCase();
+
 export function setProgress(cards, entries, rules) {
   const p = { cards: cards.length, cardsOwned: 0, variants: 0, variantsOwned: 0, copies: 0, value: 0, paid: 0 };
   for (const card of cards) {

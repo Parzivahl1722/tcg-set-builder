@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { isEmptyEntry, isOwned, sanitizeEntry, sanitizeRules } from './collection.js';
+import { isEmptyEntry, isOwned, sanitizeArtist, sanitizeEntry, sanitizeRules } from './collection.js';
 
 // Collection persisted to one JSON file. Writes are serialized and atomic (tmp + rename).
-// Shape: { version, cards: { "game:cardId": entry }, setRules: { "game:setId": rules } }
+// Shape: { version, cards: { "game:cardId": entry }, setRules: { "game:setId": rules },
+//          artistOverrides: { "game:cardId": "Artist Name" } }  (for cards the database has no artist for)
 //
 // Before the first write of each day, the current file is copied to backups/collection-YYYY-MM-DD.json,
 // so any day's changes can be rolled back. The newest `backupKeep` backups are kept (0 disables).
@@ -26,7 +27,7 @@ export async function createStore(file, { backupKeep = 30, now = () => new Date(
     await Promise.all(old.map((f) => fs.rm(path.join(backupDir, f))));
   }
 
-  let data = { version: 1, cards: {}, setRules: {} };
+  let data = { version: 1, cards: {}, setRules: {}, artistOverrides: {} };
   try {
     data = { ...data, ...JSON.parse(await fs.readFile(file, 'utf8')) };
   } catch (err) {
@@ -75,6 +76,25 @@ export async function createStore(file, { backupKeep = 30, now = () => new Date(
       else data.cards[key] = entry;
       await persist();
       return entry;
+    },
+    // Artists you've assigned by hand, { cardId: name }. These win over the card database.
+    artistOverrides(game) {
+      const prefix = `${game}:`;
+      const out = {};
+      for (const [key, name] of Object.entries(data.artistOverrides)) {
+        if (key.startsWith(prefix)) out[key.slice(prefix.length)] = name;
+      }
+      return out;
+    },
+    // Sets (or, with a blank name, clears) the artist for several cards with one write.
+    async putArtists(game, cardIds, raw) {
+      const name = sanitizeArtist(raw);
+      for (const id of cardIds) {
+        if (name) data.artistOverrides[`${game}:${id}`] = name;
+        else delete data.artistOverrides[`${game}:${id}`];
+      }
+      await persist();
+      return name;
     },
     async putRules(game, setId, raw) {
       const key = `${game}:${setId}`;

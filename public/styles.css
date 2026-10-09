@@ -227,3 +227,10 @@ dialog::backdrop { background: rgba(0,0,0,.55); }
 .notice { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px; margin-bottom: 16px; color: var(--muted); font-size: 13px; }
 .notice p { margin: 4px 0; }
 a.art { text-decoration: none; }
+
+.add-cards { margin: 0 0 16px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.add-cards summary { cursor: pointer; font-weight: 600; }
+.add-cards textarea { width: 100%; margin: 8px 0; font: inherit; }
+.artist-row { display: grid; gap: 4px; margin-top: 6px; }
+.artist-row .row { display: flex; gap: 6px; }
+.artist-row input { flex: 1; min-width: 0; }

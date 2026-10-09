@@ -31,6 +31,10 @@ On a Mac you can instead double-click `start.command`. It installs dependencies 
 - The percentage counts a card once if you own any printing of it. It uses the artist field in the Pokémon TCG API, queried live and cached for 7 days (**Refresh from API** forces an update). If the API is down it scans the GitHub data dump instead, which is slower.
 - The artist list on the landing page only covers sets you have opened. Sets cached before this feature existed need **Refresh cards** once to pick up artist names.
 - Artist names are free text in the database. Matching ignores case, accents and spacing and also finds collaboration cards, but a misspelled or differently romanized name will undercount.
+- **The database leaves the artist blank for whole sets** (as of this writing: Stellar Crown, Surging Sparks, Prismatic Evolutions, Journey Together, Destined Rivals, Mega Evolution, Perfect Order). Those cards can't show up under any artist until you assign one. Two ways:
+  - On an artist page, open **Add cards the database doesn’t credit to…** and paste one card per line: `Stellar Crown #91`, `Surging Sparks 73`, or a card id like `sv7-91`. It matches the set by name or id, then the card number, and tells you each card it added (check the name against what you meant) and any line it couldn't read. If the database credits a card to someone else, it says so; your assignment wins.
+  - In any card's **⋯** panel, type the artist under the card name and **Save**.
+  Assignments are stored in `collection.json` under `artistOverrides` (`"pokemon:sv7-91": "Shimaris Yukichi"`), so they are backed up and exported with everything else. Remove one with **remove** on the artist page or **Clear** in the card panel. Take the credit from the card itself; aggregator sites can be wrong.
 - Lorcana has no artist page.
 
 ### Variants

@@ -176,3 +176,45 @@ test('artist list groups owned cards by artist once set data includes it', async
   assert.deepEqual(body.artists, [{ name: 'Other', owned: 2 }, { name: 'Yuka  Morii', owned: 1 }]);
   assert.deepEqual([body.staleSets, body.notInOpenedSets, body.noArtist], [[], 0, 0]);
 });
+
+test('assigning cards to an artist by hand fills database gaps', async () => {
+  const post = await json('/api/games/pokemon/artists/Yuka%20Morii/cards', {
+    method: 'POST',
+    body: JSON.stringify({ cards: 'Scarlet & Violet #10\nsv1-200\nNowhere 5\ngarbage' }),
+  });
+  assert.equal(post.status, 200);
+  assert.deepEqual(post.body.added.map((c) => c.id), ['sv1-10', 'sv1-200']);
+  assert.deepEqual(post.body.unresolved.map((u) => u.line), ['Nowhere 5', 'garbage']);
+  // The cached set data credits these two to "Other", so the user is told they are overriding it.
+  assert.deepEqual(post.body.conflicts.map((c) => [c.id, c.databaseArtist]), [['sv1-10', 'Other'], ['sv1-200', 'Other']]);
+
+  const { body } = await json('/api/games/pokemon/artists/Yuka%20Morii');
+  assert.deepEqual(body.cards.filter((c) => c.overridden).map((c) => c.id).sort(), ['sv1-10', 'sv1-200']);
+  assert.equal(body.summary.cards, 5);
+  assert.equal(body.summary.cardsOwned, 3, 'sv1-2, sv1-10 and sv1-200 are owned');
+  assert.equal(calls.artist, 1, 'overrides are applied on read, not baked into the cached artist query');
+});
+
+test('the artist list and set view use hand-assigned artists', async () => {
+  const list = await json('/api/games/pokemon/artists');
+  assert.deepEqual(list.body.artists.map((a) => [a.name.replace(/\s+/g, ' '), a.owned]), [['Yuka Morii', 3]]);
+  const set = await json('/api/games/pokemon/sets/sv1');
+  assert.deepEqual(set.body.artistOverrides, { 'sv1-10': 'Yuka Morii', 'sv1-200': 'Yuka Morii' });
+});
+
+test('an override moves a card away from the artist the database credits', async () => {
+  const put = await json('/api/games/pokemon/cards/sv1-3/artist', { method: 'PUT', body: JSON.stringify({ artist: 'Someone Else' }) });
+  assert.deepEqual(put.body, { artist: 'Someone Else' });
+  let { body } = await json('/api/games/pokemon/artists/Yuka%20Morii');
+  assert.ok(!body.cards.some((c) => c.id === 'sv1-3'));
+
+  await json('/api/games/pokemon/cards/sv1-3/artist', { method: 'PUT', body: JSON.stringify({ artist: '' }) });
+  ({ body } = await json('/api/games/pokemon/artists/Yuka%20Morii'));
+  assert.ok(body.cards.some((c) => c.id === 'sv1-3' && !c.overridden));
+});
+
+test('artist overrides are in the export and reject unsupported games', async () => {
+  const { body } = await json('/api/export');
+  assert.equal(body.artistOverrides['pokemon:sv1-10'], 'Yuka Morii');
+  assert.equal((await json('/api/games/mtg/cards/x/artist', { method: 'PUT', body: '{}' })).status, 404);
+});

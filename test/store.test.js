@@ -58,3 +58,20 @@ test('a failed write does not block later saves', async () => {
   const saved = JSON.parse(await fs.readFile(file, 'utf8'));
   assert.ok(saved.cards['pokemon:b']);
 });
+
+test('artist overrides persist, are per game, and clear on a blank name', async () => {
+  const { dir, store } = await setup();
+  await store.putArtists('pokemon', ['sv7-91', 'sv8-73'], '  Shimaris Yukichi ');
+  await store.putArtists('lorcana', ['x-1'], 'Someone');
+  assert.deepEqual(store.artistOverrides('pokemon'), { 'sv7-91': 'Shimaris Yukichi', 'sv8-73': 'Shimaris Yukichi' });
+  const saved = JSON.parse(await fs.readFile(path.join(dir, 'collection.json'), 'utf8'));
+  assert.equal(saved.artistOverrides['pokemon:sv7-91'], 'Shimaris Yukichi');
+
+  await store.putArtists('pokemon', ['sv7-91'], '');
+  assert.deepEqual(Object.keys(store.artistOverrides('pokemon')), ['sv8-73']);
+
+  // A collection file written before overrides existed still loads.
+  await fs.writeFile(path.join(dir, 'old.json'), JSON.stringify({ version: 1, cards: {}, setRules: {} }));
+  const old = await createStore(path.join(dir, 'old.json'));
+  assert.deepEqual(old.artistOverrides('pokemon'), {});
+});
