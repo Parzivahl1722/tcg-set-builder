@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { isEmptyEntry, sanitizeEntry, sanitizeRules } from './collection.js';
+import { isEmptyEntry, isOwned, sanitizeEntry, sanitizeRules } from './collection.js';
 
 // Collection persisted to one JSON file. Writes are serialized and atomic (tmp + rename).
 // Shape: { version, cards: { "game:cardId": entry }, setRules: { "game:setId": rules } }
@@ -55,6 +55,15 @@ export async function createStore(file, { backupKeep = 30, now = () => new Date(
         if (e) out[id] = e;
       }
       return out;
+    },
+    // Ids of every card you hold at least one copy of, for a game.
+    ownedIds(game) {
+      const prefix = `${game}:`;
+      const ids = new Set();
+      for (const [key, entry] of Object.entries(data.cards)) {
+        if (key.startsWith(prefix) && isOwned(entry)) ids.add(key.slice(prefix.length));
+      }
+      return ids;
     },
     rulesFor(game, setId) {
       return data.setRules[`${game}:${setId}`] ?? [];

@@ -82,6 +82,8 @@ async function route() {
   modal.close();
   try {
     if (parts[0] === 'game' && parts[2] === 'set' && parts[3]) await showSet(parts[1], parts[3]);
+    else if (parts[0] === 'game' && parts[2] === 'artists') await showArtists(parts[1]);
+    else if (parts[0] === 'game' && parts[2] === 'artist' && parts[3]) await showArtist(parts[1], parts[3]);
     else await showHome(state.game);
   } catch (err) {
     view.replaceChildren(h('div', { class: 'error-box' },
@@ -155,8 +157,75 @@ function renderHome(game) {
         h('input', { type: 'checkbox', checked: state.startedOnly, onchange: (e) => { state.startedOnly = e.target.checked; renderHome(game); } }),
         'Only sets I’ve started'),
       h('button', { class: 'ghost', onclick: () => showHome(game, true).catch((e) => toast(e.message, true)) }, 'Refresh set list'),
+      state.meta.games.find((g) => g.id === game)?.artists ? h('a', { class: 'button-link', href: `#/game/${game}/artists` }, 'By artist') : null,
     ),
     list,
+  );
+}
+
+// ---------- artists ----------
+
+async function showArtists(game) {
+  view.replaceChildren(h('p', { class: 'loading' }, 'Loading artists…'));
+  const data = await api(`/api/games/${game}/artists`);
+  const input = h('input', { type: 'search', placeholder: 'Artist name, e.g. Yuka Morii', list: 'artist-names', autofocus: true });
+  const go = () => { const n = input.value.trim(); if (n) location.hash = `#/game/${game}/artist/${encodeURIComponent(n)}`; };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+  const gaps = [
+    data.staleSets.length ? `${data.staleSets.length} opened set(s) were saved before artist data existed (${data.staleSets.slice(0, 5).join(', ')}${data.staleSets.length > 5 ? '…' : ''}). Use “Refresh cards” on each to include them.` : null,
+    data.notInOpenedSets ? `${data.notInOpenedSets} owned card(s) are in sets you haven’t opened, so their artists aren’t listed.` : null,
+    data.noArtist ? `${data.noArtist} owned card(s) have no artist in the database.` : null,
+  ].filter(Boolean);
+  view.replaceChildren(
+    h('a', { href: `#/game/${game}`, class: 'back' }, '← All sets'),
+    h('h1', {}, 'Collection by artist'),
+    h('div', { class: 'toolbar' }, input, h('button', { onclick: go }, 'Look up')),
+    h('datalist', { id: 'artist-names' }, data.artists.map((a) => h('option', { value: a.name }))),
+    gaps.length ? h('div', { class: 'notice' }, gaps.map((g) => h('p', {}, g))) : null,
+    data.artists.length
+      ? h('div', { class: 'set-list' }, data.artists.map((a) => h('a', { class: 'set-row', href: `#/game/${game}/artist/${encodeURIComponent(a.name)}` },
+          h('div', { class: 'set-info' }, h('div', { class: 'set-name' }, a.name), h('div', { class: 'set-sub' }, `${a.owned} owned`)))))
+      : h('p', { class: 'muted' }, 'No artists yet. Type a name above, or open sets and mark cards as owned.'),
+  );
+}
+
+const artistView = { filter: 'all' };
+
+async function showArtist(game, name, refresh = false) {
+  view.replaceChildren(h('p', { class: 'loading' }, `Looking up ${name}… (first lookup can take a minute)`));
+  const data = await api(`/api/games/${game}/artists/${encodeURIComponent(name)}${refresh ? '?refresh=1' : ''}`);
+  const { summary: sm } = data;
+  const shown = data.cards.filter((c) => artistView.filter === 'all' || (artistView.filter === 'owned') === c.owned);
+  const bySet = new Map();
+  for (const c of shown) {
+    const key = c.setId ?? 'unknown';
+    if (!bySet.has(key)) bySet.set(key, { name: c.setName ?? 'Unknown set', date: c.releaseDate, id: c.setId, cards: [] });
+    bySet.get(key).cards.push(c);
+  }
+  const filters = [['all', 'All'], ['owned', 'Owned'], ['missing', 'Missing']];
+  const redraw = () => showArtist(game, name);
+  view.replaceChildren(
+    h('div', { class: 'set-header' },
+      h('a', { href: `#/game/${game}/artists`, class: 'back' }, '← Artists'),
+      h('h1', {}, data.cards.find((c) => c.artist?.toLowerCase() === data.artist.toLowerCase())?.artist ?? data.artist),
+      sm.cards
+        ? h('div', { class: 'stats' },
+            progressBar(sm.cardsOwned, sm.cards, 'Cards owned'),
+            h('div', { class: 'stat-line' }, h('span', {}, `${sm.copies} copies`), h('span', {}, `Paid ${money(sm.paid)}`), h('span', {}, `Value ${money(sm.value)}`)))
+        : h('p', { class: 'muted' }, 'No cards found for that name. Check the spelling, or try a shorter form.'),
+    ),
+    h('div', { class: 'toolbar' },
+      h('div', { class: 'segmented' }, filters.map(([id, label]) =>
+        h('button', { class: artistView.filter === id ? 'active' : null, onclick: () => { artistView.filter = id; redraw(); } }, label))),
+      h('button', { class: 'ghost', onclick: () => showArtist(game, name, true).then(() => toast('Artist data refreshed')).catch((e) => toast(e.message, true)) }, 'Refresh from API'),
+    ),
+    ...[...bySet.values()].map((g) => h('section', { class: 'set-group' },
+      h('h2', {}, g.id ? h('a', { href: `#/game/${game}/set/${encodeURIComponent(g.id)}` }, g.name) : g.name, g.date ? h('span', { class: 'muted' }, ` · ${g.date}`) : null),
+      h('div', { class: 'grid' }, g.cards.map((c) => h('div', { class: `tile ${c.owned ? 'complete' : 'missing'}` },
+        h('a', { class: 'art', href: g.id ? `#/game/${game}/set/${encodeURIComponent(g.id)}` : null, title: c.owned ? 'Owned' : 'Missing' },
+          cardImage(c), c.owned ? h('span', { class: 'badge' }, c.copies > 1 ? `×${c.copies}` : '✓') : null),
+        h('div', { class: 'meta' }, h('span', { class: 'num' }, `#${c.number}`), h('span', { class: 'name', title: c.name }, c.name)))))),
+    ),
   );
 }
 

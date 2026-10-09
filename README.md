@@ -24,6 +24,15 @@ On a Mac you can instead double-click `start.command`. It installs dependencies 
 - **⋯ opens details**: multiple copies per variant, condition, grader and grade (PSA, BGS, CGC, SGC, TAG), price paid, current value, date acquired, notes.
 - **Two progress bars per set**: *Cards* counts a card once you own any version. *Master set* counts every variant.
 
+### By artist (Pokémon)
+
+**By artist** on the Pokémon set list opens a page that shows what share of one artist's cards you own, across every set. Type a name (for example `Yuka Morii`) or pick from the artists of cards you already own. Owned cards are in color, missing ones grayed out; filter by All, Owned or Missing.
+
+- The percentage counts a card once if you own any printing of it. It uses the artist field in the Pokémon TCG API, queried live and cached for 7 days (**Refresh from API** forces an update). If the API is down it scans the GitHub data dump instead, which is slower.
+- The artist list on the landing page only covers sets you have opened. Sets cached before this feature existed need **Refresh cards** once to pick up artist names.
+- Artist names are free text in the database. Matching ignores case, accents and spacing and also finds collaboration cards, but a misspelled or differently romanized name will undercount.
+- Lorcana has no artist page.
+
 ### Variants
 
 Where variants come from:
