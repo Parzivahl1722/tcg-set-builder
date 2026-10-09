@@ -67,6 +67,28 @@ export function sanitizeRules(rules) {
     .filter((r) => r.name);
 }
 
+// True if any variant has at least one copy (hidden variants still count: the copy is real).
+export function isOwned(entry) {
+  return Object.values(entry?.variants ?? {}).some((copies) => copies.length > 0);
+}
+
+export function copyTotals(entry) {
+  const t = { copies: 0, value: 0, paid: 0 };
+  for (const copies of Object.values(entry?.variants ?? {})) {
+    for (const c of copies) {
+      t.copies++;
+      t.value += c.value ?? 0;
+      t.paid += c.pricePaid ?? 0;
+    }
+  }
+  return t;
+}
+
+// Artist names are free text in the card databases: ignore case, accents and spacing when comparing.
+export function normArtist(name) {
+  return String(name ?? '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
 export function setProgress(cards, entries, rules) {
   const p = { cards: cards.length, cardsOwned: 0, variants: 0, variantsOwned: 0, copies: 0, value: 0, paid: 0 };
   for (const card of cards) {

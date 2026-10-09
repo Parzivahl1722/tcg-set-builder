@@ -30,6 +30,16 @@ const fake = {
   },
 };
 
+fake.fetchCardsByArtist = async (name) => {
+  calls.artist = (calls.artist ?? 0) + 1;
+  assert.equal(name, 'Yuka Morii');
+  return [
+    { id: 'sv1-2', number: '2', name: 'Two', rarity: 'Common', artist: 'Yuka Morii', setId: 'sv1', setName: 'Scarlet & Violet', releaseDate: '2023-03-31' },
+    { id: 'sv1-3', number: '3', name: 'Three', rarity: 'Common', artist: 'Yuka Morii', setId: 'sv1', setName: 'Scarlet & Violet', releaseDate: '2023-03-31' },
+    { id: 'old-1', number: '1', name: 'Old', rarity: 'Rare', artist: 'Yuka Morii', setId: 'old', setName: 'Old Set', releaseDate: '2010-01-01' },
+  ];
+};
+
 const json = async (url, opts = {}) => {
   const res = await fetch(base + url, { ...opts, headers: { 'Content-Type': 'application/json' } });
   return { status: res.status, body: await res.json() };
@@ -122,4 +132,47 @@ test('shared collection module is served to the browser', async () => {
   const res = await fetch(`${base}/lib/collection.js`);
   assert.equal(res.status, 200);
   assert.match(await res.text(), /export function resolveVariants/);
+});
+
+test('artist page reports share of that artist\'s cards you own', async () => {
+  // sv1-2 is owned (from an earlier test); sv1-3 and old-1 are not.
+  const { status, body } = await json('/api/games/pokemon/artists/Yuka%20Morii');
+  assert.equal(status, 200);
+  assert.deepEqual(body.summary, { cards: 3, cardsOwned: 1, copies: 1, value: 50, paid: 0 });
+  assert.deepEqual(body.cards.map((c) => [c.id, c.owned]), [['sv1-2', true], ['sv1-3', false], ['old-1', false]]);
+
+  await json('/api/games/pokemon/artists/Yuka%20Morii');
+  assert.equal(calls.artist, 1, 'second lookup should hit the cache');
+});
+
+test('a card with only hidden/custom variants and no copies is not counted as owned', async () => {
+  await json('/api/games/pokemon/cards/sv1-3', { method: 'PUT', body: JSON.stringify({ hiddenVariants: ['Normal'] }) });
+  const { body } = await json('/api/games/pokemon/artists/Yuka%20Morii');
+  assert.equal(body.summary.cardsOwned, 1);
+});
+
+test('artist list covers owned cards in opened sets', async () => {
+  const { body } = await json('/api/games/pokemon/artists');
+  // The fake set data has no artist field, so those owned cards show up as stale, not as an artist.
+  assert.deepEqual(body.artists, []);
+  assert.deepEqual(body.staleSets, ['Scarlet & Violet']);
+  assert.equal(body.ownedCards, 1);
+});
+
+test('games without artist data return 404; blank artist is rejected', async () => {
+  assert.equal((await json('/api/games/pokemon/artists/%20')).status, 400);
+  assert.equal((await json('/api/games/mtg/artists')).status, 404);
+});
+
+test('artist list groups owned cards by artist once set data includes it', async () => {
+  const file = path.join(dir, 'cache', 'pokemon-set-sv1.json');
+  const cached = JSON.parse(await fs.readFile(file, 'utf8'));
+  cached.data.forEach((c) => { c.artist = c.id === 'sv1-2' ? 'Yuka  Morii' : 'Other'; });
+  await fs.writeFile(file, JSON.stringify(cached));
+  await json('/api/games/pokemon/cards/sv1-200', { method: 'PUT', body: JSON.stringify({ variants: { Holo: [{}] } }) });
+  await json('/api/games/pokemon/cards/sv1-10', { method: 'PUT', body: JSON.stringify({ variants: { Normal: [{}] } }) });
+
+  const { body } = await json('/api/games/pokemon/artists');
+  assert.deepEqual(body.artists, [{ name: 'Other', owned: 2 }, { name: 'Yuka  Morii', owned: 1 }]);
+  assert.deepEqual([body.staleSets, body.notInOpenedSets, body.noArtist], [[], 0, 0]);
 });

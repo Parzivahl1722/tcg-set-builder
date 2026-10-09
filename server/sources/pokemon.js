@@ -1,4 +1,5 @@
 import { getJson } from '../http.js';
+import { normArtist } from '../collection.js';
 
 const API = 'https://api.pokemontcg.io/v2';
 // Same data as the API, published by the PokemonTCG project. Used when the API is down.
@@ -52,10 +53,27 @@ export function normCard(c) {
     number: c.number,
     name: c.name,
     rarity: c.rarity ?? 'Unknown',
+    artist: c.artist ?? null,
     image: c.images?.small ?? null,
     imageLarge: c.images?.large ?? null,
     variants: pokemonVariants(c),
   };
+}
+
+// A card plus where it was printed, for lists that span sets (artist pages).
+export function normArtistCard(c, set = c.set) {
+  return {
+    ...normCard(c),
+    setId: set?.id ?? null,
+    setName: set?.name ?? null,
+    releaseDate: set?.releaseDate ? set.releaseDate.replaceAll('/', '-') : null,
+  };
+}
+
+// Collaboration cards list several artists in one string, so match on containment, not equality.
+export function artistMatches(cardArtist, wanted) {
+  const w = normArtist(wanted);
+  return !!w && normArtist(cardArtist).includes(w);
 }
 
 export async function fetchSets() {
@@ -91,4 +109,33 @@ export async function fetchCards(setId) {
   }
 }
 
-export default { id: 'pokemon', name: 'Pokémon', fetchSets, fetchCards };
+// Every printing by one artist, across all sets.
+export async function fetchCardsByArtist(name) {
+  const wanted = String(name).replaceAll('"', '').trim();
+  if (!wanted) return [];
+  try {
+    const cards = [];
+    for (let page = 1; ; page++) {
+      const q = encodeURIComponent(`artist:"${wanted}"`);
+      const r = await getJson(`${API}/cards?q=${q}&pageSize=250&page=${page}`, { headers: apiHeaders() });
+      cards.push(...r.data);
+      if (cards.length >= r.totalCount || r.data.length === 0) break;
+    }
+    return cards.filter((c) => artistMatches(c.artist, wanted)).map((c) => normArtistCard(c));
+  } catch (err) {
+    // The API has no cheap substitute for an artist query, so scan every set file from the data repo.
+    console.warn(`[pokemon] artist query failed (${err.message}); scanning GitHub data`);
+    const sets = await getJson(`${RAW}/sets/en.json`);
+    const out = [];
+    for (let i = 0; i < sets.length; i += 8) {
+      const batch = await Promise.all(sets.slice(i, i + 8).map(async (set) => {
+        const raw = await getJson(`${RAW}/cards/en/${encodeURIComponent(set.id)}.json`);
+        return raw.filter((c) => artistMatches(c.artist, wanted)).map((c) => normArtistCard(c, set));
+      }));
+      out.push(...batch.flat());
+    }
+    return out;
+  }
+}
+
+export default { id: 'pokemon', name: 'Pokémon', fetchSets, fetchCards, fetchCardsByArtist };
