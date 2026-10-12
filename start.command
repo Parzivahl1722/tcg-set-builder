@@ -9,7 +9,11 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-[ -d node_modules ] || npm install
+# Install on first run, and again whenever package-lock.json is newer than the last install
+# (npm refreshes node_modules/.package-lock.json each time), e.g. after pulling a new dependency.
+if [ ! -d node_modules ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then
+  npm install || { read -k 1 "?npm install failed. Press any key to close."; exit 1; }
+fi
 
 PORT="${PORT:-3000}"
 
