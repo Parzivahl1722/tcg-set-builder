@@ -58,6 +58,17 @@ The databases don't track everything collectors care about (Poké Ball and Maste
 
 The server only listens on `localhost`. There's no login, so don't expose it to a network as-is.
 
+## Printable checklist
+
+`scripts/printable_grid.py` builds a grayscale PDF of a Pokémon set, nine cards per US Letter page at true size (2.5 x 3.5 in), for printing and coloring in what you own.
+
+```sh
+pip install pillow reportlab
+python3 scripts/printable_grid.py me55 "30th Celebration"
+```
+
+The first argument is the set id from the Pokémon TCG API. It writes `<set_id>_grayscale.pdf` to the current directory. One slot per card, in set order, with no reverse-holo duplicates.
+
 ## Development
 
 ```sh
