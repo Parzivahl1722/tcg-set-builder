@@ -255,6 +255,29 @@ function cardState(card) {
   return { variants: vs, owned, status: owned === 0 ? 'missing' : owned === vs.length ? 'complete' : 'partial' };
 }
 
+// Server builds a grayscale 3x3 PDF of the set. The first build downloads every image, so it can take a while.
+async function downloadPrintable(e) {
+  const btn = e.currentTarget;
+  const { game, set } = state.current;
+  btn.disabled = true;
+  btn.textContent = 'Building PDF…';
+  try {
+    const res = await fetch(`/api/games/${game}/sets/${encodeURIComponent(set.id)}/printable.pdf`);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `${res.status} ${res.statusText}`);
+    const url = URL.createObjectURL(await res.blob());
+    const a = h('a', { href: url, download: `${set.name.replace(/[^\w.-]+/g, '_')}_printable.pdf` });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    const missing = Number(res.headers.get('X-Missing-Images'));
+    toast(missing ? `PDF saved, but ${missing} card image(s) could not be loaded and are blank boxes` : 'PDF saved', !!missing);
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Printable PDF';
+  }
+}
+
 function renderSet() {
   const { set, cards, entries, rules } = state.current;
   const progress = setProgress(cards.map((c) => ({ ...c, variants: c.autoVariants })), entries, rules);
@@ -295,6 +318,7 @@ function renderSet() {
         oninput: (e) => { state.query = e.target.value; renderGrid(); },
       }),
       h('button', { class: 'ghost', onclick: openRules }, `Set variant rules${rules.length ? ` (${rules.length})` : ''}`),
+      h('button', { class: 'ghost', onclick: downloadPrintable }, 'Printable PDF'),
       h('button', { class: 'ghost', onclick: () => showSet(state.current.game, set.id, true).then(() => toast('Card data refreshed')).catch((e) => toast(e.message, true)) }, 'Refresh cards'),
     ),
     h('div', { id: 'grid', class: 'grid' }),
