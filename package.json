@@ -20,7 +20,9 @@
   },
   "homepage": "https://github.com/Parzivahl1722/tcg-set-builder#readme",
   "dependencies": {
-    "express": "^4.22.3"
+    "express": "^4.22.3",
+    "pdfkit": "^0.20.2",
+    "sharp": "^0.35.5"
   },
   "type": "module",
   "engines": {

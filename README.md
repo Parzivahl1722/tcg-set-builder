@@ -21,6 +21,7 @@ On a Mac you can instead double-click `start.command`. It installs dependencies 
 
 - **Click a card** to add one copy and turn it color. Click again to remove it. If that copy has details recorded (grade, price, notes), clicking opens the detail panel instead, so a misclick can't delete it.
 - **Variant pills** under each card (Normal, Reverse Holo, Foil…) toggle each printing separately. A badge like `1/3` means you own some variants but not all.
+- **Printable PDF** (button on every set page) downloads a grayscale checklist: nine cards per US Letter page at true size (2.5 x 3.5 in), one slot per card in set order. Print it and color in what you own. The first build downloads every card image (about 20 seconds for 160 cards); grayscale copies are cached in `data/cache/printable/`, so later builds are quick. Cards whose image can't be loaded print as an outlined box so the grid stays aligned.
 - **⋯ opens details**: multiple copies per variant, condition, grader and grade (PSA, BGS, CGC, SGC, TAG), price paid, current value, date acquired, notes.
 - **Two progress bars per set**: *Cards* counts a card once you own any version. *Master set* counts every variant.
 
