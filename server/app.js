@@ -22,9 +22,11 @@ export function createApp({ sources, cache, store, printable = {} }) {
   };
 
   const getSets = (s, refresh) => cache.get(`${s.id}-sets`, () => s.fetchSets(), { maxAgeMs: DAY, refresh });
+  // Sources may correct cached cards as they are read (see pokemon.js adjustCard).
+  const adjust = (s, cards) => (s.adjustCard ? cards.map(s.adjustCard) : cards);
   const getCards = async (s, setId, refresh) => {
     const cards = await cache.get(`${s.id}-set-${setId}`, () => s.fetchCards(setId), { refresh });
-    return [...cards].sort((a, b) => naturalCompare(a.number, b.number));
+    return [...adjust(s, cards)].sort((a, b) => naturalCompare(a.number, b.number));
   };
 
   const wrap = (fn) => (req, res) =>
@@ -48,7 +50,8 @@ export function createApp({ sources, cache, store, printable = {} }) {
     const out = [];
     for (const set of sets) {
       // Progress only for sets whose cards have been loaded at least once.
-      const cards = await cache.peek(`${s.id}-set-${set.id}`);
+      const peeked = await cache.peek(`${s.id}-set-${set.id}`);
+      const cards = peeked && adjust(s, peeked);
       let progress = null;
       if (cards) {
         const entries = store.entriesFor(s.id, cards.map((c) => c.id));

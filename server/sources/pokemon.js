@@ -47,6 +47,17 @@ export function pokemonVariants(card) {
   return ['Holo'];
 }
 
+// Sets where every card is printed foil, so no reverse holo printing exists. The price data is empty
+// for these sets, which makes the rarity fallback above invent a Reverse Holo slot for each card.
+const NO_REVERSE_HOLO_SETS = new Set(['me55', 'me55c']);
+
+// Applied to cards as they are read, so cached sets are corrected without a refresh.
+export function adjustCard(card) {
+  const setId = String(card.id).replace(/-[^-]*$/, '');
+  if (!NO_REVERSE_HOLO_SETS.has(setId) || !card.variants.includes('Reverse Holo')) return card;
+  return { ...card, variants: card.variants.filter((v) => v !== 'Reverse Holo') };
+}
+
 export function normCard(c) {
   return {
     id: c.id,
@@ -138,4 +149,4 @@ export async function fetchCardsByArtist(name) {
   }
 }
 
-export default { id: 'pokemon', name: 'Pokémon', fetchSets, fetchCards, fetchCardsByArtist };
+export default { id: 'pokemon', name: 'Pokémon', fetchSets, fetchCards, fetchCardsByArtist, adjustCard };

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { artistMatches, fetchCardsByArtist, normArtistCard, normCard as pokeCard, pokemonVariants } from '../server/sources/pokemon.js';
+import { adjustCard, artistMatches, fetchCardsByArtist, normArtistCard, normCard as pokeCard, pokemonVariants } from '../server/sources/pokemon.js';
 import { normCard as lorCard, lorcanaVariants } from '../server/sources/lorcana.js';
 
 test('pokemon variants come from tcgplayer price keys', () => {
@@ -96,4 +96,18 @@ test('artist lookup falls back to scanning the data repo', async (t) => {
   });
   const cards = await fetchCardsByArtist('yuka morii');
   assert.deepEqual(cards.map((c) => [c.id, c.setName, c.releaseDate]), [['a-1', 'A', '2020-01-01']]);
+});
+
+test('adjustCard drops Reverse Holo only in sets where every card is foil', () => {
+  const card = (id, variants) => ({ id, variants });
+  assert.deepEqual(adjustCard(card('me55-1', ['Normal', 'Reverse Holo'])).variants, ['Normal']);
+  assert.deepEqual(adjustCard(card('me55-9', ['Holo', 'Reverse Holo'])).variants, ['Holo']);
+  assert.deepEqual(adjustCard(card('me55c-58', ['Normal', 'Reverse Holo'])).variants, ['Normal']);
+  // Other sets, including the 2021 Celebrations Classic Collection, are untouched.
+  const kept = card('cel25c-4', ['Normal', 'Reverse Holo']);
+  assert.equal(adjustCard(kept), kept);
+  const sv = card('sv1-1', ['Normal', 'Reverse Holo']);
+  assert.equal(adjustCard(sv), sv);
+  // A set id that merely starts the same way is not a match.
+  assert.deepEqual(adjustCard(card('me55x-1', ['Normal', 'Reverse Holo'])).variants, ['Normal', 'Reverse Holo']);
 });
