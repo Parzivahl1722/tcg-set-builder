@@ -87,6 +87,57 @@ export function artistMatches(cardArtist, wanted) {
   return !!w && normArtist(cardArtist).includes(w);
 }
 
+// A card plus its dex numbers, for the by-Pokémon page.
+export function normSpeciesCard(c, set = c.set) {
+  return { ...normArtistCard(c, set), supertype: c.supertype ?? null, dex: c.nationalPokedexNumbers ?? [] };
+}
+
+// "Pikachu V", "Pikachu-GX", "Pikachu ☆" -> "pikachu". Only trailing form markers are removed.
+const FORM_SUFFIX = /(?:[\s-](?:ex|gx|v|vmax|vstar|break|prime|legend|lv\.?\s?x|star|tera)|\s*[☆★δ])$/;
+function baseName(normalized) {
+  let n = normalized;
+  for (let prev = ''; prev !== n;) { prev = n; n = n.replace(FORM_SUFFIX, '').trim(); }
+  return n;
+}
+
+const wordRegex = (norm) => new RegExp(`(?:^|[^a-z0-9])${norm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:[^a-z0-9]|$)`);
+
+// National Dex number for a name, voted by the single-species cards named exactly that (plus form suffixes).
+// Falls back to any single-species card whose name contains it. null if nothing matches.
+export function resolveDex(cards, name) {
+  const w = normArtist(name);
+  if (!w) return null;
+  const contains = wordRegex(w);
+  const tally = (accept) => {
+    const votes = new Map();
+    for (const c of cards) {
+      const nums = c.nationalPokedexNumbers;
+      if (nums?.length !== 1 || !accept(normArtist(c.name))) continue;
+      votes.set(nums[0], (votes.get(nums[0]) ?? 0) + 1);
+    }
+    return [...votes].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  };
+  return tally((n) => baseName(n) === w) ?? tally((n) => contains.test(n));
+}
+
+// Cards for one Pokémon: everything listing its dex number, plus cards with no dex number at all whose name
+// contains it (trainers like "Pikachu Libre", or Pokémon the database never numbered), so they can be matched by hand.
+export function selectSpecies(cards, { dex = null, name = null } = {}) {
+  const w = normArtist(name);
+  const contains = w ? wordRegex(w) : null;
+  const seen = new Set();
+  const out = [];
+  for (const c of cards) {
+    if (seen.has(c.id)) continue;
+    const nums = c.nationalPokedexNumbers ?? [];
+    if ((dex != null && nums.includes(dex)) || (!nums.length && contains?.test(normArtist(c.name)))) {
+      seen.add(c.id);
+      out.push(c);
+    }
+  }
+  return out;
+}
+
 export async function fetchSets() {
   try {
     const sets = [];
@@ -149,4 +200,42 @@ export async function fetchCardsByArtist(name) {
   }
 }
 
-export default { id: 'pokemon', name: 'Pokémon', fetchSets, fetchCards, fetchCardsByArtist, adjustCard };
+async function queryAll(q) {
+  const cards = [];
+  for (let page = 1; ; page++) {
+    const r = await getJson(`${API}/cards?q=${encodeURIComponent(q)}&pageSize=250&page=${page}`, { headers: apiHeaders() });
+    cards.push(...r.data);
+    if (cards.length >= r.totalCount || r.data.length === 0) break;
+  }
+  return cards;
+}
+
+// Every printing of one Pokémon across all sets. `input` is a name ("Pikachu") or a National Dex number ("25", "#25").
+export async function fetchCardsBySpecies(input) {
+  const raw = String(input).replaceAll('"', '').trim();
+  if (!raw) return [];
+  const numeric = /^#?\d{1,4}$/.test(raw);
+  const name = numeric ? null : raw;
+  let dex = numeric ? Number(raw.replace('#', '')) : null;
+  try {
+    const named = name ? await queryAll(`name:"${name}"`) : [];
+    if (name) dex = resolveDex(named, name);
+    const byDex = dex != null ? await queryAll(`nationalPokedexNumbers:${dex}`) : [];
+    return selectSpecies([...byDex, ...named], { dex, name }).map((c) => normSpeciesCard(c));
+  } catch (err) {
+    console.warn(`[pokemon] species query failed (${err.message}); scanning GitHub data`);
+    const sets = await getJson(`${RAW}/sets/en.json`);
+    const all = [];
+    for (let i = 0; i < sets.length; i += 8) {
+      const batch = await Promise.all(sets.slice(i, i + 8).map(async (set) => {
+        const cards = await getJson(`${RAW}/cards/en/${encodeURIComponent(set.id)}.json`);
+        return cards.map((c) => ({ ...c, set }));
+      }));
+      all.push(...batch.flat());
+    }
+    if (name) dex = resolveDex(all, name);
+    return selectSpecies(all, { dex, name }).map((c) => normSpeciesCard(c));
+  }
+}
+
+export default { id: 'pokemon', name: 'Pokémon', fetchSets, fetchCards, fetchCardsByArtist, fetchCardsBySpecies, adjustCard };

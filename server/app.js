@@ -37,7 +37,7 @@ export function createApp({ sources, cache, store, printable = {} }) {
 
   app.get('/api/meta', (req, res) => {
     res.json({
-      games: Object.values(sources).map((s) => ({ id: s.id, name: s.name, artists: typeof s.fetchCardsByArtist === 'function' })),
+      games: Object.values(sources).map((s) => ({ id: s.id, name: s.name, artists: typeof s.fetchCardsByArtist === 'function', species: typeof s.fetchCardsBySpecies === 'function' })),
       conditions: CONDITIONS,
       graders: GRADERS,
     });
@@ -165,6 +165,63 @@ export function createApp({ sources, cache, store, printable = {} }) {
       summary,
       cards: cards.map((c) => ({ ...c, owned: isOwned(entries[c.id]), copies: copyTotals(entries[c.id]).copies })),
     });
+  }));
+
+  const speciesSource = (req, res) => {
+    const s = source(req, res);
+    if (s && typeof s.fetchCardsBySpecies !== 'function') {
+      res.status(404).json({ error: `${s.name} has no Pokémon lookup` });
+      return null;
+    }
+    return s;
+  };
+
+  // One slot per card and variant for one Pokémon. Oldest set first; cards with no dex number (matched by
+  // name only) come last. Variants honor each set's rules and each card's hidden/custom variants.
+  async function speciesSlots(s, input, refresh) {
+    const key = normArtist(input);
+    if (!key) return null;
+    const slug = key.replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+    const hash = crypto.createHash('sha1').update(key).digest('hex').slice(0, 8);
+    const found = await cache.get(`${s.id}-species-${slug}-${hash}`, () => s.fetchCardsBySpecies(input), { maxAgeMs: 7 * DAY, refresh });
+    const cards = adjust(s, found).map((c) => ({ ...c, noDex: !c.dex?.length }));
+    cards.sort((a, b) =>
+      (a.noDex - b.noDex) ||
+      (a.releaseDate ?? '9999').localeCompare(b.releaseDate ?? '9999') ||
+      (a.setId ?? '').localeCompare(b.setId ?? '') ||
+      naturalCompare(a.number, b.number));
+    const entries = store.entriesFor(s.id, cards.map((c) => c.id));
+    const slots = [];
+    for (const { variants, ...card } of cards) {
+      for (const variant of resolveVariants({ ...card, variants }, entries[card.id], store.rulesFor(s.id, card.setId))) {
+        slots.push({ ...card, cardId: card.id, variant });
+      }
+    }
+    return { slots, entries };
+  }
+
+  app.get('/api/games/:game/species/:name', wrap(async (req, res) => {
+    const s = speciesSource(req, res);
+    if (!s) return;
+    const data = await speciesSlots(s, req.params.name, req.query.refresh === '1');
+    if (!data) return res.status(400).json({ error: 'A Pokémon name or dex number is required' });
+    res.json({ species: req.params.name.trim(), ...data });
+  }));
+
+  // Same 3x3 checklist as a set, one slot per variant, labeled with the variant.
+  app.get('/api/games/:game/species/:name/printable.pdf', wrap(async (req, res) => {
+    const s = speciesSource(req, res);
+    if (!s) return;
+    const data = await speciesSlots(s, req.params.name, false);
+    if (!data) return res.status(400).json({ error: 'A Pokémon name or dex number is required' });
+    if (!data.slots.length) return res.status(404).json({ error: `No cards found for ${req.params.name.trim()}` });
+    const title = req.params.name.trim();
+    const slots = data.slots.map((sl) => ({ id: sl.cardId, number: sl.number, name: sl.name, image: sl.image, imageLarge: sl.imageLarge, label: sl.variant }));
+    const { doc, missing } = await buildPrintable(slots, { title, ...printable });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${title.replace(/[^\w.-]+/g, '_')}_master_set.pdf"`);
+    res.setHeader('X-Missing-Images', String(new Set(missing.map((m) => m.id)).size));
+    doc.pipe(res);
   }));
 
   app.put('/api/games/:game/cards/:cardId', wrap(async (req, res) => {

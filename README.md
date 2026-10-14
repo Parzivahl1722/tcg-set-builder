@@ -34,6 +34,16 @@ On a Mac you can instead double-click `start.command`. It installs dependencies 
 - Artist names are free text in the database. Matching ignores case, accents and spacing and also finds collaboration cards, but a misspelled or differently romanized name will undercount.
 - Lorcana has no artist page.
 
+### By Pokémon (Pokémon)
+
+**By Pokémon** on the Pokémon set list builds a master set for one Pokémon across every set. Type a name (`Pikachu`) or a National Dex number (`25`).
+
+- One slot per card **and variant** (Normal, Reverse Holo, Holo…), oldest set first. Variants follow each set's rules and each card's hidden or custom variants, so the page agrees with the set pages. Click a slot to add or remove a plain copy; a slot with graded or priced copies sends you to its set page instead.
+- Cards come from the Pokémon TCG API's `nationalPokedexNumbers` field, so "Pikachu & Zekrom-GX" shows under both Pokémon and name variants ("Flying Pikachu") are all found.
+- Cards with **no dex number** in the database are not dropped: if their name contains the Pokémon's name they are listed in a separate section at the end, and printed last. Most are Trainers and Energy (about 3,200 of 20,600 cards); a few real Pokémon (Paradox Pokémon such as Flutter Mane) lack a number too. There is no way yet to assign one to a Pokémon by hand.
+- **Printable PDF** is the same 3x3 sheet as a set, one slot per variant, with the variant printed on a tag at the bottom of each card. A card with two variants prints twice.
+- Results are cached for 7 days (**Refresh from API** forces an update). If the API is down it scans the GitHub data dump, which is slower and has no price data, so it guesses variants from rarity.
+
 ### Variants
 
 Where variants come from:

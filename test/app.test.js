@@ -40,6 +40,18 @@ fake.fetchCardsByArtist = async (name) => {
   ];
 };
 
+fake.fetchCardsBySpecies = async (name) => {
+  calls.species = (calls.species ?? 0) + 1;
+  assert.equal(name, 'Pikachu');
+  const card = (id, number, setId, setName, releaseDate, dex, extra = {}) =>
+    ({ id, number, name: 'Pikachu', rarity: 'Common', image: null, imageLarge: null, variants: ['Normal', 'Reverse Holo'], setId, setName, releaseDate, dex, ...extra });
+  return [
+    card('sv1-2', '2', 'sv1', 'Scarlet & Violet', '2023-03-31', [25]),
+    card('nodex-1', '5', 'zz', 'Odd Set', '2015-01-01', [], { name: 'Pikachu Libre', variants: ['Normal'] }),
+    card('old-1', '1', 'old', 'Old Set', '2010-01-01', [25], { variants: ['Normal'] }),
+  ];
+};
+
 const json = async (url, opts = {}) => {
   const res = await fetch(base + url, { ...opts, headers: { 'Content-Type': 'application/json' } });
   return { status: res.status, body: await res.json() };
@@ -175,4 +187,33 @@ test('artist list groups owned cards by artist once set data includes it', async
   const { body } = await json('/api/games/pokemon/artists');
   assert.deepEqual(body.artists, [{ name: 'Other', owned: 2 }, { name: 'Yuka  Morii', owned: 1 }]);
   assert.deepEqual([body.staleSets, body.notInOpenedSets, body.noArtist], [[], 0, 0]);
+});
+
+test('species page lists one slot per variant, oldest first, with no-dex cards last', async () => {
+  const { status, body } = await json('/api/games/pokemon/species/Pikachu');
+  assert.equal(status, 200);
+  // sv1 has the "Poké Ball Reverse" rule from an earlier test, and sv1-2 owns a Reverse Holo copy.
+  assert.deepEqual(body.slots.map((sl) => [sl.cardId, sl.variant, sl.noDex]), [
+    ['old-1', 'Normal', false],
+    ['sv1-2', 'Normal', false],
+    ['sv1-2', 'Reverse Holo', false],
+    ['sv1-2', 'Poké Ball Reverse', false],
+    ['nodex-1', 'Normal', true],
+  ]);
+  assert.equal(body.entries['sv1-2'].variants['Reverse Holo'].length, 1);
+  await json('/api/games/pokemon/species/Pikachu');
+  assert.equal(calls.species, 1, 'second lookup should hit the cache');
+});
+
+test('species PDF has one labeled slot per variant', async () => {
+  const res = await fetch(`${base}/api/games/pokemon/species/Pikachu/printable.pdf`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-disposition'), /Pikachu_master_set\.pdf/);
+  assert.equal(res.headers.get('x-missing-images'), '3', 'three distinct cards have no image');
+  assert.equal(Buffer.from(await res.arrayBuffer()).subarray(0, 5).toString(), '%PDF-');
+});
+
+test('species lookup rejects blank names and games without it', async () => {
+  assert.equal((await json('/api/games/pokemon/species/%20')).status, 400);
+  assert.equal((await json('/api/games/mtg/species/Pikachu')).status, 404);
 });
