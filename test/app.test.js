@@ -272,3 +272,35 @@ test('matches reject blank names and bad dex numbers', async () => {
   const sane = await json('/api/games/pokemon/species/Pikachu/matches', { method: 'PUT', body: JSON.stringify({ dex: -3, include: [{ name: 'no id' }], exclude: [42] }) });
   assert.deepEqual(sane.body, { dex: null, include: [], exclude: [] });
 });
+
+test('saved collections list on the home page with progress from cached lookups only', async () => {
+  const put = (type, name) => json(`/api/games/pokemon/collections/${type}/${encodeURIComponent(name)}`, { method: 'PUT' });
+  assert.deepEqual((await json('/api/games/pokemon/collections')).body, []);
+
+  await put('species', 'Pikachu');
+  await put('artist', 'Yuka Morii');
+  await put('species', 'Raichu');
+  const before = { ...calls };
+  const { body } = await json('/api/games/pokemon/collections');
+  assert.deepEqual(body.map((c) => [c.id, c.name]), [['species:pikachu', 'Pikachu'], ['artist:yuka morii', 'Yuka Morii'], ['species:raichu', 'Raichu']]);
+  // Both were looked up earlier, so they have progress; Raichu never was, so listing it must not call the API.
+  assert.equal(body[0].progress.cards, 3);
+  assert.equal(body[0].progress.variantsOwned, 1, 'only the sv1-2 Reverse Holo copy from an earlier test is owned');
+  assert.equal(body[1].progress.cards, 3);
+  assert.equal(body[2].progress, null);
+  assert.deepEqual([calls.species, calls.artist], [before.species, before.artist]);
+
+  // Saving again with different capitals replaces the entry; removing drops it.
+  await put('species', 'PIKACHU');
+  assert.deepEqual((await json('/api/games/pokemon/collections')).body.map((c) => c.name), ['Yuka Morii', 'Raichu', 'PIKACHU']);
+  const del = await json('/api/games/pokemon/collections/species/raichu', { method: 'DELETE' });
+  assert.deepEqual(del.body.map((c) => c.id), ['artist:yuka morii', 'species:pikachu']);
+  const saved = JSON.parse(await fs.readFile(path.join(dir, 'collection.json'), 'utf8'));
+  assert.equal(saved.savedCollections.pokemon.length, 2);
+});
+
+test('saved collections reject bad types and blank names, and unsupported games', async () => {
+  assert.equal((await json('/api/games/pokemon/collections/set/x', { method: 'PUT' })).status, 400);
+  assert.equal((await json('/api/games/pokemon/collections/species/%20', { method: 'PUT' })).status, 400);
+  assert.equal((await json('/api/games/mtg/collections')).status, 404);
+});

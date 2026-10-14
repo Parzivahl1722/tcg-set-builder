@@ -235,3 +235,7 @@ a.art { text-decoration: none; }
 .search-results { margin-top: 12px; }
 .tile .row { display: flex; gap: 6px; align-items: center; }
 .error-text { color: #b3261e; }
+
+.set-row-wrap { position: relative; }
+.set-row-wrap .set-row { display: flex; }
+.row-remove { position: absolute; top: 8px; right: 8px; }

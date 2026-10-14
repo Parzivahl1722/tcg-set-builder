@@ -92,6 +92,16 @@ export function sanitizeSpeciesMatches(r = {}) {
   return { dex: dexNumber(r.dex), include: [...include.values()], exclude };
 }
 
+export const COLLECTION_TYPES = ['species', 'artist'];
+
+// A saved lookup shown on the home page like a set: a Pokémon or an artist, by the name the user typed.
+export function sanitizeCollectionRef(r = {}) {
+  const name = str(r.name, 100);
+  const key = normArtist(name);
+  if (!COLLECTION_TYPES.includes(r.type) || !key) return null;
+  return { id: `${r.type}:${key}`, type: r.type, name };
+}
+
 export const isEmptySpeciesMatches = (m) => m.dex == null && !m.include.length && !m.exclude.length;
 
 export function isEmptyEntry(e) {
