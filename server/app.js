@@ -127,10 +127,28 @@ export function createApp({ sources, cache, store }) {
     if (!key) return res.status(400).json({ error: 'Artist name is required' });
     const slug = key.replace(/[^a-z0-9]+/g, '-').slice(0, 40);
     const hash = crypto.createHash('sha1').update(key).digest('hex').slice(0, 8);
-    const found = await cache.get(`${s.id}-artist-${slug}-${hash}`, () => s.fetchCardsByArtist(req.params.name), {
-      maxAgeMs: 7 * DAY, refresh: req.query.refresh === '1',
+    const refresh = req.query.refresh === '1';
+    const dbCards = await cache.get(`${s.id}-artist-${slug}-${hash}`, () => s.fetchCardsByArtist(req.params.name), {
+      maxAgeMs: 7 * DAY, refresh,
     });
-    // Hand-assigned artists win over the database: they fill its blanks and correct its mistakes.
+    // A second database fills the artist credits the first leaves blank. Kept in its own cache entry, and
+    // allowed to fail, so a TCGdex outage never hides the main results or gets cached into them.
+    const notices = [];
+    let found = dbCards;
+    if (typeof s.fetchSupplementCardsByArtist === 'function') {
+      try {
+        const sets = await getSets(s, refresh);
+        const extra = await cache.get(`${s.id}-artist-tcgdex-${slug}-${hash}`, () => s.fetchSupplementCardsByArtist(req.params.name, sets), {
+          maxAgeMs: 7 * DAY, refresh,
+        });
+        const seen = new Set(dbCards.map((c) => c.id));
+        found = [...dbCards, ...extra.cards.filter((c) => !seen.has(c.id))];
+        if (extra.skipped) notices.push(`${extra.skipped} card(s) credited to this artist by TCGdex are in sets this app doesn’t list yet. Use “Refresh from API” here, or “Refresh set list” on the home page.`);
+      } catch (err) {
+        notices.push(`TCGdex couldn’t be reached (${err.message}). Showing the Pokémon TCG database only, which leaves some recent sets without artists.`);
+      }
+    }
+    // Hand-assigned artists win over the databases: they fill blanks and correct mistakes.
     const overrides = store.artistOverrides(s.id);
     const merged = found
       .filter((c) => !(c.id in overrides) || artistMatches(overrides[c.id], req.params.name))
@@ -168,6 +186,7 @@ export function createApp({ sources, cache, store }) {
     res.json({
       artist: req.params.name.trim(),
       summary,
+      notices,
       unresolved,
       cards: cards.map((c) => ({ ...c, owned: isOwned(entries[c.id]), copies: copyTotals(entries[c.id]).copies })),
     });

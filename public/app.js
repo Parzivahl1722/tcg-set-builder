@@ -245,7 +245,7 @@ async function showArtist(game, name, refresh = false) {
             h('div', { class: 'stat-line' }, h('span', {}, `${sm.copies} copies`), h('span', {}, `Paid ${money(sm.paid)}`), h('span', {}, `Value ${money(sm.value)}`)))
         : h('p', { class: 'muted' }, 'No cards found for that name. Check the spelling, or try a shorter form.'),
     ),
-    artistView.notice.length ? h('div', { class: 'notice' }, artistView.notice.map((n) => h('p', {}, n))) : null,
+    artistView.notice.length || data.notices?.length ? h('div', { class: 'notice' }, [...artistView.notice, ...(data.notices ?? [])].map((n) => h('p', {}, n))) : null,
     data.unresolved?.length ? h('div', { class: 'notice' }, h('p', {}, `${data.unresolved.length} card(s) you assigned here couldn’t be loaded right now: ${data.unresolved.join(', ')}.`)) : null,
     addCardsPanel(game, name, data.artist),
     h('div', { class: 'toolbar' },
