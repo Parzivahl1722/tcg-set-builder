@@ -32,6 +32,12 @@ On a Mac you can instead double-click `start.command`. It installs dependencies 
 - The percentage counts a card once if you own any printing of it. It uses the artist field in the Pokémon TCG API, queried live and cached for 7 days (**Refresh from API** forces an update). If the API is down it scans the GitHub data dump instead, which is slower.
 - The artist list on the landing page only covers sets you have opened. Sets cached before this feature existed need **Refresh cards** once to pick up artist names.
 - Artist names are free text in the database. Matching ignores case, accents and spacing and also finds collaboration cards, but a misspelled or differently romanized name will undercount.
+- **A second database fills the gaps.** The Pokémon TCG data leaves the artist blank for whole recent sets (Stellar Crown, Surging Sparks, Prismatic Evolutions, Journey Together, Destined Rivals, Mega Evolution, Perfect Order). Artist pages also ask [TCGdex](https://github.com/tcgdex/cards-database) (MIT licensed, community maintained), which has illustrators for those sets, and merge the two by set and card number. Anything TCGdex adds is cached separately for 7 days. If TCGdex is unreachable, the page still shows the main database and says so.
+- **Hand-assigned artists** cover whatever both databases miss, and win over them when they disagree:
+  - On an artist page, open **Add cards the database doesn’t credit to…** and paste one card per line: `Stellar Crown #91`, `Surging Sparks 73`, or a card id like `sv7-91`. It matches the set by name or id, then the card number, and tells you each card it added (check the name against what you meant), any line it couldn't read, and any card another database credits to someone else.
+  - In any card's **⋯** panel, type the artist under the card name and **Save**.
+  Assignments are stored in `collection.json` under `artistOverrides` (`"pokemon:sv7-91": "Shimaris Yukichi"`), so they are backed up and exported with everything else. Remove one with **remove** on the artist page or **Clear** in the card panel. Take the credit from the card itself; aggregator sites can be wrong.
+- Artist matching on TCGdex is by exact name, so cards that credit several artists in one string only show up if the Pokémon TCG data has them.
 - Lorcana has no artist page.
 
 ### By Pokémon (Pokémon)
@@ -53,13 +59,18 @@ On a Mac you can instead double-click `start.command`. It installs dependencies 
 
 Progress on the home page comes only from lookups already cached (even if older than 7 days), so it never waits on the API. A saved lookup that has never loaded shows "Not opened yet" until you open it once.
 
+### Sets from TCGdex
+
+Sets the Pokémon TCG data doesn't have yet (for example **MEP Black Star Promos**) are added to the set list from TCGdex, so you can track them like any other set. Only recent sets are merged (released 2025 or later), and Pokémon TCG Pocket is left out; older sets TCGdex names differently are mostly duplicates. The first time you open one of these sets it fetches every card individually, so it can take a minute. TCGdex is also the last-resort card source for any set the Pokémon TCG API and its GitHub data both fail on. Cards in these sets are saved under ids like `mep-5`; if the Pokémon TCG API later adds the same set under another id, your marks on the old ids won't carry over.
+
+
 ### Variants
 
 Where variants come from:
 
 | Game | Source | Notes |
 |---|---|---|
-| Pokémon | Which printings have TCGplayer prices in the [Pokémon TCG API](https://pokemontcg.io) | Falls back to rarity rules when price data is missing |
+| Pokémon | Which printings have TCGplayer prices in the [Pokémon TCG API](https://pokemontcg.io); TCGdex's variant flags for TCGdex-only sets | Falls back to rarity rules when price data is missing |
 | Lorcana | Rarity, from [Lorcast](https://lorcast.com) | Normal + Foil; Enchanted, Epic and Iconic are foil-only |
 
 The databases don't track everything collectors care about (Poké Ball and Master Ball reverse holos, stamped promos, errors). Two ways to fix that:

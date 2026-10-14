@@ -195,6 +195,48 @@ test('artist list groups owned cards by artist once set data includes it', async
   assert.deepEqual([body.staleSets, body.notInOpenedSets, body.noArtist], [[], 0, 0]);
 });
 
+test('assigning cards to an artist by hand fills database gaps', async () => {
+  const post = await json('/api/games/pokemon/artists/Yuka%20Morii/cards', {
+    method: 'POST',
+    body: JSON.stringify({ cards: 'Scarlet & Violet #10\nsv1-200\nNowhere 5\ngarbage' }),
+  });
+  assert.equal(post.status, 200);
+  assert.deepEqual(post.body.added.map((c) => c.id), ['sv1-10', 'sv1-200']);
+  assert.deepEqual(post.body.unresolved.map((u) => u.line), ['Nowhere 5', 'garbage']);
+  // The cached set data credits these two to "Other", so the user is told they are overriding it.
+  assert.deepEqual(post.body.conflicts.map((c) => [c.id, c.databaseArtist]), [['sv1-10', 'Other'], ['sv1-200', 'Other']]);
+
+  const { body } = await json('/api/games/pokemon/artists/Yuka%20Morii');
+  assert.deepEqual(body.cards.filter((c) => c.overridden).map((c) => c.id).sort(), ['sv1-10', 'sv1-200']);
+  assert.equal(body.summary.cards, 5);
+  assert.equal(body.summary.cardsOwned, 3, 'sv1-2, sv1-10 and sv1-200 are owned');
+  assert.equal(calls.artist, 1, 'overrides are applied on read, not baked into the cached artist query');
+});
+
+test('the artist list and set view use hand-assigned artists', async () => {
+  const list = await json('/api/games/pokemon/artists');
+  assert.deepEqual(list.body.artists.map((a) => [a.name.replace(/\s+/g, ' '), a.owned]), [['Yuka Morii', 3]]);
+  const set = await json('/api/games/pokemon/sets/sv1');
+  assert.deepEqual(set.body.artistOverrides, { 'sv1-10': 'Yuka Morii', 'sv1-200': 'Yuka Morii' });
+});
+
+test('an override moves a card away from the artist the database credits', async () => {
+  const put = await json('/api/games/pokemon/cards/sv1-3/artist', { method: 'PUT', body: JSON.stringify({ artist: 'Someone Else' }) });
+  assert.deepEqual(put.body, { artist: 'Someone Else' });
+  let { body } = await json('/api/games/pokemon/artists/Yuka%20Morii');
+  assert.ok(!body.cards.some((c) => c.id === 'sv1-3'));
+
+  await json('/api/games/pokemon/cards/sv1-3/artist', { method: 'PUT', body: JSON.stringify({ artist: '' }) });
+  ({ body } = await json('/api/games/pokemon/artists/Yuka%20Morii'));
+  assert.ok(body.cards.some((c) => c.id === 'sv1-3' && !c.overridden));
+});
+
+test('artist overrides are in the export and reject unsupported games', async () => {
+  const { body } = await json('/api/export');
+  assert.equal(body.artistOverrides['pokemon:sv1-10'], 'Yuka Morii');
+  assert.equal((await json('/api/games/mtg/cards/x/artist', { method: 'PUT', body: '{}' })).status, 404);
+});
+
 test('species page lists one slot per variant, oldest first, with no-dex cards last', async () => {
   const { status, body } = await json('/api/games/pokemon/species/Pikachu');
   assert.equal(status, 200);
@@ -286,7 +328,9 @@ test('saved collections list on the home page with progress from cached lookups 
   // Both were looked up earlier, so they have progress; Raichu never was, so listing it must not call the API.
   assert.equal(body[0].progress.cards, 3);
   assert.equal(body[0].progress.variantsOwned, 1, 'only the sv1-2 Reverse Holo copy from an earlier test is owned');
-  assert.equal(body[1].progress.cards, 3);
+  // 3 from the database plus the 2 cards assigned to this artist by hand in an earlier test.
+  assert.equal(body[1].progress.cards, 5, 'saved-collection progress counts hand-assigned cards, like the artist page');
+  assert.equal(body[1].progress.cardsOwned, 3);
   assert.equal(body[2].progress, null);
   assert.deepEqual([calls.species, calls.artist], [before.species, before.artist]);
 

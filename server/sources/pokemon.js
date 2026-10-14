@@ -1,5 +1,8 @@
 import { getJson } from '../http.js';
-import { normArtist } from '../collection.js';
+import { artistMatches, normArtist } from '../collection.js';
+import * as tcgdex from './tcgdex.js';
+
+export { artistMatches };
 
 const API = 'https://api.pokemontcg.io/v2';
 // Same data as the API, published by the PokemonTCG project. Used when the API is down.
@@ -81,10 +84,42 @@ export function normArtistCard(c, set = c.set) {
   };
 }
 
-// Collaboration cards list several artists in one string, so match on containment, not equality.
-export function artistMatches(cardArtist, wanted) {
-  const w = normArtist(wanted);
-  return !!w && normArtist(cardArtist).includes(w);
+const words = (name) => new Set(String(name).toLowerCase().match(/[a-z0-9]+/g) ?? []);
+const squash = (name) => String(name ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+const isSubset = (a, b) => [...a].every((w) => b.has(w));
+
+// The app's set that a TCGdex set corresponds to, by normalized id or by name.
+export function findAppSet(sets, t) {
+  return sets.find((s) => s.id === tcgdex.normSetId(t.id)) ?? sets.find((s) => squash(s.name) === squash(t.name));
+}
+
+// Older sets TCGdex "lacks a match" for are mostly the same set under another name (trainer kits, McDonald's),
+// so only sets from this date on are added. That is where the Pokémon TCG data is behind.
+const TCGDEX_EXTRA_SETS_FROM = '2025-01-01';
+
+function normTcgdexSet(d) {
+  return {
+    id: tcgdex.normSetId(d.id),
+    name: d.name,
+    series: d.serie?.name ?? 'Other',
+    releaseDate: d.releaseDate ?? null,
+    printedTotal: d.cardCount?.official || null,
+    total: d.cardCount?.total ?? null,
+    logo: d.logo ? `${d.logo}.webp` : null,
+    symbol: d.symbol ? `${d.symbol}.webp` : null,
+  };
+}
+
+// Recent non-Pocket TCGdex sets the Pokémon TCG data doesn't list.
+export async function tcgdexExtraSets(known) {
+  const [all, pocket] = await Promise.all([tcgdex.fetchSetsBrief(), tcgdex.fetchPocketSetIds().catch(() => new Set())]);
+  const unmatched = all.filter((t) => !pocket.has(t.id) && !findAppSet(known, t));
+  const details = await tcgdex.mapLimit(unmatched, 6, (t) => tcgdex.fetchSet(t.id).catch(() => null));
+  return details
+    .filter((d) => d && d.serie?.id !== 'tcgp' && (d.releaseDate ?? '') >= TCGDEX_EXTRA_SETS_FROM)
+    // The same release under a longer or shorter name (30th Classic Collection vs 30th Celebration: Classic Collection).
+    .filter((d) => !known.some((k) => k.releaseDate === d.releaseDate && (isSubset(words(k.name), words(d.name)) || isSubset(words(d.name), words(k.name)))))
+    .map(normTcgdexSet);
 }
 
 // A card plus its dex numbers, for the by-Pokémon page.
@@ -139,36 +174,86 @@ export function selectSpecies(cards, { dex = null, name = null } = {}) {
 }
 
 export async function fetchSets() {
+  let sets;
   try {
-    const sets = [];
+    const all = [];
     for (let page = 1; ; page++) {
       const r = await getJson(`${API}/sets?orderBy=-releaseDate&pageSize=250&page=${page}`, { headers: apiHeaders() });
-      sets.push(...r.data);
-      if (sets.length >= r.totalCount || r.data.length === 0) break;
+      all.push(...r.data);
+      if (all.length >= r.totalCount || r.data.length === 0) break;
     }
-    return sets.map(normSet);
+    sets = all.map(normSet);
   } catch (err) {
     console.warn(`[pokemon] API failed (${err.message}); using GitHub data`);
     const raw = await getJson(`${RAW}/sets/en.json`);
-    return raw.map(normSet).sort((a, b) => (b.releaseDate ?? '').localeCompare(a.releaseDate ?? ''));
+    sets = raw.map(normSet).sort((a, b) => (b.releaseDate ?? '').localeCompare(a.releaseDate ?? ''));
   }
+  try {
+    sets.push(...(await tcgdexExtraSets(sets)));
+    sets.sort((a, b) => (b.releaseDate ?? '').localeCompare(a.releaseDate ?? ''));
+  } catch (err) {
+    console.warn(`[pokemon] TCGdex sets unavailable (${err.message}); listing the Pokémon TCG sets only`);
+  }
+  return sets;
+}
+
+const TCGDEX_VARIANTS = { normal: 'Normal', reverse: 'Reverse Holo', holo: 'Holo', firstEdition: '1st Edition' };
+
+// TCGdex card detail -> the app's card shape. Ids follow the Pokémon TCG convention: "<setId>-<number>".
+export function normTcgdexCard(c, setId) {
+  const number = tcgdex.stripZeros(c.localId);
+  const rarity = !c.rarity || c.rarity === 'None' ? 'Unknown' : c.rarity.replace(/\b\w/g, (ch) => ch.toUpperCase());
+  const flags = Array.isArray(c.variants) ? c.variants.map((v) => v.type) : Object.entries(c.variants ?? {}).filter(([, on]) => on === true).map(([k]) => k);
+  const variants = [...new Set(flags.map((k) => TCGDEX_VARIANTS[k]).filter(Boolean))];
+  return {
+    id: `${setId}-${number}`,
+    number,
+    name: c.name,
+    rarity,
+    artist: c.illustrator ?? null,
+    image: tcgdex.imageUrl(c.image, 'low'),
+    imageLarge: tcgdex.imageUrl(c.image, 'high'),
+    variants: variants.length ? variants : pokemonVariants({ rarity }),
+  };
+}
+
+async function cardsViaApi(setId) {
+  const cards = [];
+  for (let page = 1; ; page++) {
+    const q = encodeURIComponent(`set.id:${setId}`);
+    const r = await getJson(`${API}/cards?q=${q}&pageSize=250&page=${page}`, { headers: apiHeaders() });
+    cards.push(...r.data);
+    if (cards.length >= r.totalCount || r.data.length === 0) break;
+  }
+  if (!cards.length) throw new Error('no cards');
+  return cards.map(normCard);
+}
+
+async function cardsViaGithub(setId) {
+  const raw = await getJson(`${RAW}/cards/en/${encodeURIComponent(setId)}.json`);
+  return raw.map(normCard);
+}
+
+async function cardsViaTcgdex(setId) {
+  const t = (await tcgdex.fetchSetsBrief()).find((s) => tcgdex.normSetId(s.id) === setId);
+  if (!t) throw new Error('not a TCGdex set');
+  const set = await tcgdex.fetchSet(t.id);
+  const cards = await tcgdex.mapLimit(set.cards ?? [], 8, (c) => tcgdex.fetchCard(c.id));
+  if (!cards.length) throw new Error('no cards');
+  return cards.map((c) => normTcgdexCard(c, setId));
 }
 
 export async function fetchCards(setId) {
-  try {
-    const cards = [];
-    for (let page = 1; ; page++) {
-      const q = encodeURIComponent(`set.id:${setId}`);
-      const r = await getJson(`${API}/cards?q=${q}&pageSize=250&page=${page}`, { headers: apiHeaders() });
-      cards.push(...r.data);
-      if (cards.length >= r.totalCount || r.data.length === 0) break;
+  const failures = [];
+  for (const [label, load] of [['API', cardsViaApi], ['GitHub data', cardsViaGithub], ['TCGdex', cardsViaTcgdex]]) {
+    try {
+      return await load(setId);
+    } catch (err) {
+      console.warn(`[pokemon] ${label} failed for ${setId} (${err.message})`);
+      failures.push(`${label}: ${err.message}`);
     }
-    return cards.map(normCard);
-  } catch (err) {
-    console.warn(`[pokemon] API failed for ${setId} (${err.message}); using GitHub data`);
-    const raw = await getJson(`${RAW}/cards/en/${encodeURIComponent(setId)}.json`);
-    return raw.map(normCard);
   }
+  throw new Error(`No card source has ${setId} (${failures.join('; ')})`);
 }
 
 // Every printing by one artist, across all sets.
@@ -198,6 +283,38 @@ export async function fetchCardsByArtist(name) {
     }
     return out;
   }
+}
+
+// Cards TCGdex credits to an artist, mapped onto the app's sets and card ids. The Pokémon TCG data leaves
+// the artist blank for whole recent sets, so this is how those cards reach an artist page.
+// `skipped` counts cards whose set the app doesn't list (refresh the set list to pick up new ones).
+export async function fetchSupplementCardsByArtist(name, sets) {
+  const wanted = String(name).trim();
+  if (!wanted) return { cards: [], skipped: 0 };
+  const [found, tcgSets] = await Promise.all([tcgdex.fetchIllustratorCards(wanted), tcgdex.fetchSetsBrief()]);
+  const cards = [];
+  let skipped = 0;
+  for (const c of found) {
+    const tcgSetId = tcgdex.setIdOfCard(c);
+    const t = tcgSets.find((x) => x.id === tcgSetId) ?? { id: tcgSetId, name: '' };
+    const set = findAppSet(sets, t);
+    if (!set) { skipped++; continue; }
+    const number = tcgdex.stripZeros(c.localId);
+    cards.push({
+      id: `${set.id}-${number}`,
+      number,
+      name: c.name,
+      rarity: 'Unknown',
+      artist: wanted,
+      image: tcgdex.imageUrl(c.image, 'low'),
+      imageLarge: tcgdex.imageUrl(c.image, 'high'),
+      variants: [],
+      setId: set.id,
+      setName: set.name,
+      releaseDate: set.releaseDate,
+    });
+  }
+  return { cards, skipped };
 }
 
 async function queryAll(q) {
@@ -265,4 +382,6 @@ export async function searchCards(text) {
   }
 }
 
-export default { id: 'pokemon', name: 'Pokémon', fetchSets, fetchCards, fetchCardsByArtist, fetchCardsBySpecies, searchCards, adjustCard };
+export default {
+  id: 'pokemon', name: 'Pokémon', fetchSets, fetchCards, fetchCardsByArtist, fetchSupplementCardsByArtist, fetchCardsBySpecies, searchCards, adjustCard,
+};

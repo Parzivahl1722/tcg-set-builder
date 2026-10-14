@@ -3,7 +3,10 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildPrintable } from './printable.js';
-import { CONDITIONS, GRADERS, copyTotals, sanitizeMatchedCard, sanitizeCollectionRef, isOwned, naturalCompare, normArtist, resolveVariants, setProgress } from './collection.js';
+import {
+  CONDITIONS, GRADERS, artistMatches, copyTotals, isOwned, naturalCompare, normArtist, parseCardRef, resolveVariants, sameNumber,
+  sanitizeCollectionRef, sanitizeMatchedCard, setProgress,
+} from './collection.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const DAY = 24 * 60 * 60 * 1000;
@@ -86,6 +89,7 @@ export function createApp({ sources, cache, store, printable = {} }) {
       progress: setProgress(cards, entries, rules),
       cards: cards.map((c) => ({ ...c, autoVariants: c.variants, variants: resolveVariants(c, entries[c.id], rules) })),
       entries,
+      artistOverrides: Object.fromEntries(Object.entries(store.artistOverrides(s.id)).filter(([id]) => cards.some((c) => c.id === id))),
     });
   }));
 
@@ -123,6 +127,7 @@ export function createApp({ sources, cache, store, printable = {} }) {
     const s = artistSource(req, res);
     if (!s) return;
     const owned = store.ownedIds(s.id);
+    const overrides = store.artistOverrides(s.id);
     const sets = (await cache.peek(`${s.id}-sets`)) ?? [];
     const found = new Set();
     const byKey = new Map();
@@ -134,10 +139,11 @@ export function createApp({ sources, cache, store, printable = {} }) {
         if (!owned.has(c.id)) continue;
         found.add(c.id);
         // Cached before artist data was stored: that set needs "Refresh cards" once.
-        if (!('artist' in c)) { if (!staleSets.includes(set.name)) staleSets.push(set.name); continue; }
-        const key = normArtist(c.artist);
+        const artist = overrides[c.id] ?? c.artist;
+        if (!(c.id in overrides) && !('artist' in c)) { if (!staleSets.includes(set.name)) staleSets.push(set.name); continue; }
+        const key = normArtist(artist);
         if (!key) { noArtist++; continue; }
-        const a = byKey.get(key) ?? { name: c.artist, owned: 0 };
+        const a = byKey.get(key) ?? { name: artist, owned: 0 };
         a.owned++;
         byKey.set(key, a);
       }
@@ -146,16 +152,75 @@ export function createApp({ sources, cache, store, printable = {} }) {
     res.json({ artists, ownedCards: owned.size, notInOpenedSets: owned.size - found.size, noArtist, staleSets });
   }));
 
+  // Every card for one artist: the main database, TCGdex's credits for sets the main one leaves blank, and cards
+  // you assigned by hand, merged. The second database is cached separately and allowed to fail, so an outage
+  // never hides the main results or gets cached into them. Hand assignments win over both databases.
+  // peekOnly: use only what is already cached (null when the main lookup isn't), so the home page never waits.
+  async function artistCards(s, name, { refresh = false, peekOnly = false } = {}) {
+    const notices = [];
+    const dbCards = peekOnly
+      ? await cache.peek(lookupKey(s, 'artist', name))
+      : await cache.get(lookupKey(s, 'artist', name), () => s.fetchCardsByArtist(name), { maxAgeMs: 7 * DAY, refresh });
+    if (!dbCards) return null;
+    const cardsOfSet = async (setId) => {
+      const cards = peekOnly ? await cache.peek(`${s.id}-set-${setId}`) : await getCards(s, setId, false);
+      return cards ? adjust(s, cards) : [];
+    };
+    // A card another source credits to this artist, filled out with the app's own record of that card (rarity,
+    // variants) so it can be marked owned like any other. Falls back to the bare credit if the set has no such card.
+    const fillOut = async (cards) => {
+      const bySet = new Map();
+      for (const c of cards) if (!bySet.has(c.setId)) bySet.set(c.setId, await cardsOfSet(c.setId).catch(() => []));
+      return cards.map((c) => {
+        const real = bySet.get(c.setId)?.find((x) => x.id === c.id);
+        return real ? { ...real, artist: c.artist, setId: c.setId, setName: c.setName, releaseDate: c.releaseDate } : { ...c, variants: ['Normal'] };
+      });
+    };
+
+    let found = dbCards;
+    if (typeof s.fetchSupplementCardsByArtist === 'function') {
+      try {
+        const sets = peekOnly ? await cache.peek(`${s.id}-sets`) : await getSets(s, refresh);
+        const key = lookupKey(s, 'artist-tcgdex', name);
+        const extra = peekOnly
+          ? await cache.peek(key)
+          : await cache.get(key, () => s.fetchSupplementCardsByArtist(name, sets), { maxAgeMs: 7 * DAY, refresh });
+        if (extra) {
+          const seen = new Set(dbCards.map((c) => c.id));
+          found = [...dbCards, ...(await fillOut(extra.cards.filter((c) => !seen.has(c.id))))];
+          if (extra.skipped) notices.push(`${extra.skipped} card(s) credited to this artist by TCGdex are in sets this app doesn’t list yet. Use “Refresh from API” here, or “Refresh set list” on the home page.`);
+        }
+      } catch (err) {
+        notices.push(`TCGdex couldn’t be reached (${err.message}). Showing the Pokémon TCG database only, which leaves some recent sets without artists.`);
+      }
+    }
+
+    const overrides = store.artistOverrides(s.id);
+    const merged = found
+      .filter((c) => !(c.id in overrides) || artistMatches(overrides[c.id], name))
+      .map((c) => (c.id in overrides ? { ...c, artist: overrides[c.id], overridden: true } : c));
+    const have = new Set(merged.map((c) => c.id));
+    const unresolved = [];
+    const assigned = Object.entries(overrides).filter(([id, a]) => !have.has(id) && artistMatches(a, name));
+    if (assigned.length) {
+      const sets = (peekOnly ? await cache.peek(`${s.id}-sets`) : await getSets(s, false).catch(() => [])) ?? [];
+      for (const [id, artist] of assigned) {
+        const set = sets.find((x) => x.id === id.slice(0, id.indexOf('-')));
+        const card = set && (await cardsOfSet(set.id).catch(() => [])).find((c) => c.id === id);
+        if (card) merged.push({ ...card, artist, overridden: true, setId: set.id, setName: set.name, releaseDate: set.releaseDate });
+        else unresolved.push(id);
+      }
+    }
+    const cards = adjust(s, merged).sort((a, b) =>
+      (b.releaseDate ?? '').localeCompare(a.releaseDate ?? '') || naturalCompare(a.number, b.number));
+    return { cards, notices, unresolved };
+  }
+
   app.get('/api/games/:game/artists/:name', wrap(async (req, res) => {
     const s = artistSource(req, res);
     if (!s) return;
-    const key = normArtist(req.params.name);
-    if (!key) return res.status(400).json({ error: 'Artist name is required' });
-    const found = await cache.get(lookupKey(s, 'artist', req.params.name), () => s.fetchCardsByArtist(req.params.name), {
-      maxAgeMs: 7 * DAY, refresh: req.query.refresh === '1',
-    });
-    const cards = [...found].sort((a, b) =>
-      (b.releaseDate ?? '').localeCompare(a.releaseDate ?? '') || naturalCompare(a.number, b.number));
+    if (!normArtist(req.params.name)) return res.status(400).json({ error: 'Artist name is required' });
+    const { cards, notices, unresolved } = await artistCards(s, req.params.name, { refresh: req.query.refresh === '1' });
     const entries = store.entriesFor(s.id, cards.map((c) => c.id));
     const summary = { cards: cards.length, cardsOwned: 0, copies: 0, value: 0, paid: 0 };
     for (const c of cards) {
@@ -171,10 +236,55 @@ export function createApp({ sources, cache, store, printable = {} }) {
     res.json({
       artist: req.params.name.trim(),
       summary,
+      notices,
+      unresolved,
       cards: cards.map((c) => ({ ...c, owned: isOwned(entries[c.id]), copies: copyTotals(entries[c.id]).copies })),
       entries,
       rules: rulesBySet(s, cards),
     });
+  }));
+
+  // Assign cards to an artist by hand. Lines look like "Stellar Crown #91" or "sv7-91".
+  app.post('/api/games/:game/artists/:name/cards', wrap(async (req, res) => {
+    const s = artistSource(req, res);
+    if (!s) return;
+    const artist = req.params.name.trim();
+    if (!normArtist(artist)) return res.status(400).json({ error: 'Artist name is required' });
+    const lines = String(req.body?.cards ?? '').split(/[\n;]/).map((l) => l.trim()).filter(Boolean).slice(0, 500);
+    const sets = await getSets(s, false);
+    const added = [];
+    const unresolved = [];
+    const conflicts = [];
+    for (const line of lines) {
+      const ref = parseCardRef(line);
+      let set = null;
+      let card = null;
+      try {
+        if (ref?.id) {
+          set = sets.find((x) => x.id === ref.id.slice(0, ref.id.indexOf('-')));
+          card = set && (await getCards(s, set.id, false)).find((c) => c.id === ref.id);
+        } else if (ref) {
+          const q = ref.set.toLowerCase();
+          set = sets.find((x) => x.id.toLowerCase() === q) ?? sets.find((x) => x.name.toLowerCase() === q);
+          card = set && (await getCards(s, set.id, false)).find((c) => sameNumber(c.number, ref.number));
+        }
+      } catch (err) {
+        unresolved.push({ line, reason: err.message });
+        continue;
+      }
+      if (!card) { unresolved.push({ line, reason: ref ? 'No such set or card number' : 'Not understood' }); continue; }
+      if (card.artist && !artistMatches(card.artist, artist)) conflicts.push({ id: card.id, name: card.name, databaseArtist: card.artist });
+      added.push({ id: card.id, name: card.name, number: card.number, setName: set.name });
+    }
+    await store.putArtists(s.id, added.map((c) => c.id), artist);
+    res.json({ added, unresolved, conflicts });
+  }));
+
+  // Set (or clear, with a blank artist) the artist for one card.
+  app.put('/api/games/:game/cards/:cardId/artist', wrap(async (req, res) => {
+    const s = artistSource(req, res);
+    if (!s) return;
+    res.json({ artist: await store.putArtists(s.id, [req.params.cardId], req.body?.artist) });
   }));
 
   const speciesSource = (req, res) => {
@@ -286,7 +396,7 @@ export function createApp({ sources, cache, store, printable = {} }) {
       const p = total([...byCard.values()], data.slots.length, data.slots.filter((sl) => data.entries[sl.cardId]?.variants?.[sl.variant]?.length).length);
       return { ...p, ...sumCopies(byCard.keys(), data.entries) };
     }
-    const found = await cache.peek(lookupKey(s, 'artist', c.name));
+    const found = (await artistCards(s, c.name, { peekOnly: true }))?.cards;
     if (!found) return null;
     const entries = store.entriesFor(s.id, found.map((x) => x.id));
     const p = total(found.map((x) => ({ owned: isOwned(entries[x.id]) })), found.length, found.filter((x) => isOwned(entries[x.id])).length);
