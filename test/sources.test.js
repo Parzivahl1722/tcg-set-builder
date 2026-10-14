@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { adjustCard, artistMatches, fetchCardsByArtist, fetchCardsBySpecies, resolveDex, selectSpecies, normArtistCard, normCard as pokeCard, pokemonVariants } from '../server/sources/pokemon.js';
+import { adjustCard, artistMatches, fetchCardsByArtist, fetchCardsBySpecies, resolveDex, searchCards, selectSpecies, normArtistCard, normCard as pokeCard, pokemonVariants } from '../server/sources/pokemon.js';
 import { normCard as lorCard, lorcanaVariants } from '../server/sources/lorcana.js';
 
 test('pokemon variants come from tcgplayer price keys', () => {
@@ -172,5 +172,35 @@ test('species lookup by dex number skips the name query; falls back to the data 
   });
   const cards = await fetchCardsBySpecies('#25');
   assert.match(urls[0], /q=nationalPokedexNumbers:25/);
+  assert.deepEqual(cards.map((c) => [c.id, c.setName]), [['a-1', 'A']]);
+});
+
+test('a forced dex overrides the name lookup but still matches no-dex cards by name', async (t) => {
+  const urls = [];
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    const u = decodeURIComponent(String(url));
+    urls.push(u);
+    const rows = u.includes('nationalPokedexNumbers:26')
+      ? [dexCard('r-1', 'Raichu', [26])]
+      : [dexCard('p-1', 'Pikachu', [25]), dexCard('p-2', 'Pikachu Libre', [], { supertype: 'Trainer' })];
+    return Response.json({ totalCount: rows.length, data: rows });
+  });
+  const cards = await fetchCardsBySpecies('pikachu', { dex: 26 });
+  assert.match(urls[1], /nationalPokedexNumbers:26/);
+  assert.deepEqual(cards.map((c) => c.id).sort(), ['p-2', 'r-1']);
+});
+
+test('card search takes partial words, keeps name matches, and falls back to the data repo', async (t) => {
+  assert.deepEqual(await searchCards('a'), []);
+  const urls = [];
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    const u = String(url);
+    urls.push(decodeURIComponent(u));
+    if (u.includes('api.pokemontcg.io')) return new Response('down', { status: 503 });
+    if (u.endsWith('/sets/en.json')) return Response.json([{ id: 'a', name: 'A', releaseDate: '2020/01/01' }]);
+    return Response.json([dexCard('a-1', 'Pikachu Libre', []), dexCard('a-2', 'Raichu', [26])]);
+  });
+  const cards = await searchCards('chu lib');
+  assert.match(urls[0], /q=name:"chu lib"/);
   assert.deepEqual(cards.map((c) => [c.id, c.setName]), [['a-1', 'A']]);
 });

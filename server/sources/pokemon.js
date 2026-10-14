@@ -211,7 +211,8 @@ async function queryAll(q) {
 }
 
 // Every printing of one Pokémon across all sets. `input` is a name ("Pikachu") or a National Dex number ("25", "#25").
-export async function fetchCardsBySpecies(input) {
+// `dex` forces the National Dex number instead of working it out from the name.
+export async function fetchCardsBySpecies(input, { dex: forcedDex = null } = {}) {
   const raw = String(input).replaceAll('"', '').trim();
   if (!raw) return [];
   const numeric = /^#?\d{1,4}$/.test(raw);
@@ -219,7 +220,7 @@ export async function fetchCardsBySpecies(input) {
   let dex = numeric ? Number(raw.replace('#', '')) : null;
   try {
     const named = name ? await queryAll(`name:"${name}"`) : [];
-    if (name) dex = resolveDex(named, name);
+    if (name) dex = forcedDex ?? resolveDex(named, name);
     const byDex = dex != null ? await queryAll(`nationalPokedexNumbers:${dex}`) : [];
     return selectSpecies([...byDex, ...named], { dex, name }).map((c) => normSpeciesCard(c));
   } catch (err) {
@@ -233,9 +234,35 @@ export async function fetchCardsBySpecies(input) {
       }));
       all.push(...batch.flat());
     }
-    if (name) dex = resolveDex(all, name);
+    if (name) dex = forcedDex ?? resolveDex(all, name);
     return selectSpecies(all, { dex, name }).map((c) => normSpeciesCard(c));
   }
 }
 
-export default { id: 'pokemon', name: 'Pokémon', fetchSets, fetchCards, fetchCardsByArtist, fetchCardsBySpecies, adjustCard };
+// Free-text card search for matching cards to a Pokémon by hand. Partial names work; capped at 60 newest.
+export async function searchCards(text) {
+  const raw = String(text).replaceAll('"', '').trim();
+  if (raw.length < 2) return [];
+  const w = normArtist(raw);
+  const newest = (cards) => cards
+    .sort((a, b) => (b.set?.releaseDate ?? '').localeCompare(a.set?.releaseDate ?? ''))
+    .slice(0, 60).map((c) => normSpeciesCard(c));
+  try {
+    const found = await queryAll(/\s/.test(raw) ? `name:"${raw}"` : `name:${raw}*`);
+    return newest(found.filter((c) => normArtist(c.name).includes(w)));
+  } catch (err) {
+    console.warn(`[pokemon] card search failed (${err.message}); scanning GitHub data`);
+    const sets = await getJson(`${RAW}/sets/en.json`);
+    const out = [];
+    for (let i = 0; i < sets.length; i += 8) {
+      const batch = await Promise.all(sets.slice(i, i + 8).map(async (set) => {
+        const cards = await getJson(`${RAW}/cards/en/${encodeURIComponent(set.id)}.json`);
+        return cards.filter((c) => normArtist(c.name).includes(w)).map((c) => ({ ...c, set }));
+      }));
+      out.push(...batch.flat());
+    }
+    return newest(out);
+  }
+}
+
+export default { id: 'pokemon', name: 'Pokémon', fetchSets, fetchCards, fetchCardsByArtist, fetchCardsBySpecies, searchCards, adjustCard };

@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildPrintable } from './printable.js';
-import { CONDITIONS, GRADERS, copyTotals, isOwned, naturalCompare, normArtist, resolveVariants, setProgress } from './collection.js';
+import { CONDITIONS, GRADERS, copyTotals, sanitizeMatchedCard, isOwned, naturalCompare, normArtist, resolveVariants, setProgress } from './collection.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const DAY = 24 * 60 * 60 * 1000;
@@ -181,10 +181,28 @@ export function createApp({ sources, cache, store, printable = {} }) {
   async function speciesSlots(s, input, refresh) {
     const key = normArtist(input);
     if (!key) return null;
+    const matches = store.speciesMatchesFor(s.id, key) ?? { dex: null, include: [], exclude: [] };
     const slug = key.replace(/[^a-z0-9]+/g, '-').slice(0, 40);
     const hash = crypto.createHash('sha1').update(key).digest('hex').slice(0, 8);
-    const found = await cache.get(`${s.id}-species-${slug}-${hash}`, () => s.fetchCardsBySpecies(input), { maxAgeMs: 7 * DAY, refresh });
-    const cards = adjust(s, found).map((c) => ({ ...c, noDex: !c.dex?.length }));
+    const dexPart = matches.dex != null ? `-d${matches.dex}` : '';
+    const found = await cache.get(`${s.id}-species-${slug}-${hash}${dexPart}`, () => s.fetchCardsBySpecies(input, { dex: matches.dex }), { maxAgeMs: 7 * DAY, refresh });
+
+    // Hand-matched cards count as matched (not "no dex") and show even if the lookup didn't return them.
+    const manual = new Map(matches.include.map((c) => [c.id, c]));
+    const excluded = new Set(matches.exclude);
+    const merged = [];
+    const seen = new Set();
+    const excludedCards = [];
+    for (const c of found) {
+      if (excluded.has(c.id)) { excludedCards.push({ id: c.id, name: c.name, number: c.number, setName: c.setName }); continue; }
+      if (seen.has(c.id)) continue;
+      seen.add(c.id);
+      merged.push(manual.has(c.id) ? { ...c, manual: true } : c);
+    }
+    for (const c of manual.values()) if (!seen.has(c.id)) merged.push({ ...c, manual: true });
+    for (const id of excluded) if (!excludedCards.some((e) => e.id === id)) excludedCards.push({ id });
+
+    const cards = adjust(s, merged).map((c) => ({ ...c, noDex: !c.manual && !c.dex?.length }));
     cards.sort((a, b) =>
       (a.noDex - b.noDex) ||
       (a.releaseDate ?? '9999').localeCompare(b.releaseDate ?? '9999') ||
@@ -197,7 +215,7 @@ export function createApp({ sources, cache, store, printable = {} }) {
         slots.push({ ...card, cardId: card.id, variant });
       }
     }
-    return { slots, entries };
+    return { slots, entries, matches, excluded: excludedCards };
   }
 
   app.get('/api/games/:game/species/:name', wrap(async (req, res) => {
@@ -206,6 +224,23 @@ export function createApp({ sources, cache, store, printable = {} }) {
     const data = await speciesSlots(s, req.params.name, req.query.refresh === '1');
     if (!data) return res.status(400).json({ error: 'A Pokémon name or dex number is required' });
     res.json({ species: req.params.name.trim(), ...data });
+  }));
+
+  // Replaces this Pokémon's corrections: { dex, include: [card], exclude: [cardId] }.
+  app.put('/api/games/:game/species/:name/matches', wrap(async (req, res) => {
+    const s = speciesSource(req, res);
+    if (!s) return;
+    const key = normArtist(req.params.name);
+    if (!key) return res.status(400).json({ error: 'A Pokémon name or dex number is required' });
+    res.json(await store.putSpeciesMatches(s.id, key, req.body));
+  }));
+
+  // Find any card by name, to match it to a Pokémon by hand.
+  app.get('/api/games/:game/card-search', wrap(async (req, res) => {
+    const s = speciesSource(req, res);
+    if (!s) return;
+    const found = await s.searchCards(String(req.query.q ?? ''));
+    res.json(found.map((c) => sanitizeMatchedCard(c)).filter(Boolean));
   }));
 
   // Same 3x3 checklist as a set, one slot per variant, labeled with the variant.
