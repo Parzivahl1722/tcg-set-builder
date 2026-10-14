@@ -58,3 +58,18 @@ test('a failed write does not block later saves', async () => {
   const saved = JSON.parse(await fs.readFile(file, 'utf8'));
   assert.ok(saved.cards['pokemon:b']);
 });
+
+test('species matches persist, sanitize, and are deleted when empty', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tcg-sm-'));
+  const file = path.join(dir, 'c.json');
+  const store = await createStore(file, { backupKeep: 0 });
+  const saved = await store.putSpeciesMatches('pokemon', 'pikachu', { dex: 25, include: [{ id: 'a-1', name: 'A', dex: [25, 'x'], image: 'http://x' }, { id: 'a-1' }], exclude: ['b-2', 'a-1'] });
+  assert.equal(saved.dex, 25);
+  assert.deepEqual(saved.include.map((c) => [c.id, c.image, c.dex]), [['a-1', null, [25]]]);
+  assert.deepEqual(saved.exclude, ['b-2'], 'an included card is never also excluded');
+  const reopened = await createStore(file, { backupKeep: 0 });
+  assert.equal(reopened.speciesMatchesFor('pokemon', 'pikachu').dex, 25);
+  await reopened.putSpeciesMatches('pokemon', 'pikachu', {});
+  assert.equal(reopened.speciesMatchesFor('pokemon', 'pikachu'), null);
+  await fs.rm(dir, { recursive: true, force: true });
+});

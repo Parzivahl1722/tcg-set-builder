@@ -1,4 +1,4 @@
-import { resolveVariants, setProgress } from '/lib/collection.js';
+import { copyTotals, isOwned, resolveVariants, setProgress } from '/lib/collection.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const view = $('#view');
@@ -84,6 +84,8 @@ async function route() {
     if (parts[0] === 'game' && parts[2] === 'set' && parts[3]) await showSet(parts[1], parts[3]);
     else if (parts[0] === 'game' && parts[2] === 'artists') await showArtists(parts[1]);
     else if (parts[0] === 'game' && parts[2] === 'artist' && parts[3]) await showArtist(parts[1], parts[3]);
+    else if (parts[0] === 'game' && parts[2] === 'species' && parts[3]) await showSpecies(parts[1], parts[3]);
+    else if (parts[0] === 'game' && parts[2] === 'species') showSpeciesSearch(parts[1]);
     else await showHome(state.game);
   } catch (err) {
     view.replaceChildren(h('div', { class: 'error-box' },
@@ -158,6 +160,7 @@ function renderHome(game) {
         'Only sets I’ve started'),
       h('button', { class: 'ghost', onclick: () => showHome(game, true).catch((e) => toast(e.message, true)) }, 'Refresh set list'),
       state.meta.games.find((g) => g.id === game)?.artists ? h('a', { class: 'button-link', href: `#/game/${game}/artists` }, 'By artist') : null,
+      state.meta.games.find((g) => g.id === game)?.species ? h('a', { class: 'button-link', href: `#/game/${game}/species` }, 'By Pokémon') : null,
     ),
     list,
   );
@@ -226,6 +229,215 @@ async function showArtist(game, name, refresh = false) {
           cardImage(c), c.owned ? h('span', { class: 'badge' }, c.copies > 1 ? `×${c.copies}` : '✓') : null),
         h('div', { class: 'meta' }, h('span', { class: 'num' }, `#${c.number}`), h('span', { class: 'name', title: c.name }, c.name)))))),
     ),
+  );
+}
+
+// ---------- by Pokémon: one slot per card and variant ----------
+
+function showSpeciesSearch(game) {
+  const input = h('input', { type: 'search', placeholder: 'Pokémon name or dex number, e.g. Pikachu or 25', autofocus: true });
+  const go = () => { const n = input.value.trim(); if (n) location.hash = `#/game/${game}/species/${encodeURIComponent(n)}`; };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+  view.replaceChildren(
+    h('a', { href: `#/game/${game}`, class: 'back' }, '← All sets'),
+    h('h1', {}, 'Master set by Pokémon'),
+    h('div', { class: 'toolbar' }, input, h('button', { onclick: go }, 'Look up')),
+    h('p', { class: 'muted' }, 'Lists every printing of every card of one Pokémon, oldest set first, with one slot per variant (Normal, Reverse Holo…). Cards the database has no Pokédex number for are included when their name matches, listed last.'),
+  );
+}
+
+const speciesView = { filter: 'all', game: null, name: null, data: null };
+
+async function showSpecies(game, name, refresh = false) {
+  if (!refresh && speciesView.data && speciesView.game === game && speciesView.name === name) return renderSpecies();
+  view.replaceChildren(h('p', { class: 'loading' }, `Looking up ${name}… (first lookup can take a minute)`));
+  const data = await api(`/api/games/${game}/species/${encodeURIComponent(name)}${refresh ? '?refresh=1' : ''}`);
+  Object.assign(speciesView, { game, name, data });
+  renderSpecies();
+}
+
+const slotCopies = (slot) => speciesView.data.entries[slot.cardId]?.variants?.[slot.variant] ?? [];
+
+// Click a slot: add a plain copy if you own none; remove a lone untouched copy; otherwise send you to the
+// set page, where copies with a grade or price can be edited without losing details by misclick.
+async function toggleSlot(slot) {
+  const { game, data } = speciesView;
+  const before = data.entries[slot.cardId];
+  const copies = slotCopies(slot);
+  if (copies.length && !(copies.length === 1 && isPlain(copies[0]))) {
+    location.hash = `#/game/${game}/set/${encodeURIComponent(slot.setId)}`;
+    return;
+  }
+  const next = structuredClone(before ?? blankEntry());
+  if (copies.length) next.variants[slot.variant] = [];
+  else (next.variants[slot.variant] ??= []).push(newCopy());
+  for (const [v, cs] of Object.entries(next.variants)) if (!cs.length) delete next.variants[v];
+  data.entries[slot.cardId] = next;
+  renderSpecies();
+  try {
+    data.entries[slot.cardId] = await api(`/api/games/${game}/cards/${encodeURIComponent(slot.cardId)}`, { method: 'PUT', body: JSON.stringify(next) });
+  } catch (err) {
+    if (before) data.entries[slot.cardId] = before; else delete data.entries[slot.cardId];
+    toast(`Not saved: ${err.message}`, true);
+  }
+  state.sets[game] = null; // progress on the home page is now stale
+  renderSpecies();
+}
+
+// Corrections for this Pokémon (forced dex, hand-matched cards, removed cards) are saved server-side, then the page reloads.
+async function saveMatches(change) {
+  const { game, name, data } = speciesView;
+  const next = { ...structuredClone(data.matches), ...change };
+  const scroll = window.scrollY;
+  try {
+    await api(`/api/games/${game}/species/${encodeURIComponent(name)}/matches`, { method: 'PUT', body: JSON.stringify(next) });
+    speciesView.data = null;
+    await showSpecies(game, name);
+    window.scrollTo(0, scroll);
+  } catch (err) {
+    toast(`Not saved: ${err.message}`, true);
+  }
+}
+
+// What a hand-matched card keeps: the card itself, not the per-variant slot fields.
+const cardOf = (sl) => ({ id: sl.cardId, number: sl.number, name: sl.name, rarity: sl.rarity, artist: sl.artist, image: sl.image, imageLarge: sl.imageLarge,
+  variants: speciesView.data.slots.filter((x) => x.cardId === sl.cardId).map((x) => x.variant), setId: sl.setId, setName: sl.setName, releaseDate: sl.releaseDate,
+  supertype: sl.supertype, dex: sl.dex });
+const matchCard = (card) => saveMatches({ include: [...speciesView.data.matches.include.filter((c) => c.id !== card.id), card], exclude: speciesView.data.matches.exclude.filter((id) => id !== card.id) });
+const unmatchCard = (id) => saveMatches({ include: speciesView.data.matches.include.filter((c) => c.id !== id) });
+const excludeCard = (id) => saveMatches({ include: speciesView.data.matches.include.filter((c) => c.id !== id), exclude: [...new Set([...speciesView.data.matches.exclude, id])] });
+const restoreCard = (id) => saveMatches({ exclude: speciesView.data.matches.exclude.filter((x) => x !== id) });
+
+// The dex number the lookup settled on: the most common single-species number among the cards.
+function autoDex(slots) {
+  const votes = new Map();
+  for (const sl of slots) if (sl.dex?.length === 1) votes.set(sl.dex[0], (votes.get(sl.dex[0]) ?? 0) + 1);
+  return [...votes].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+}
+
+function matchPanel() {
+  const { game, data } = speciesView;
+  const results = h('div', { class: 'search-results' });
+  const input = h('input', { type: 'search', placeholder: 'Search any card by name, e.g. Pikachu Libre' });
+  const search = async () => {
+    const q = input.value.trim();
+    if (q.length < 2) return;
+    results.replaceChildren(h('p', { class: 'loading' }, 'Searching…'));
+    try {
+      const found = await api(`/api/games/${game}/card-search?q=${encodeURIComponent(q)}`);
+      const have = new Set(data.slots.map((sl) => sl.cardId));
+      results.replaceChildren(...(found.length ? [h('div', { class: 'grid' }, found.map((c) => h('div', { class: 'tile' },
+        h('div', { class: 'art' }, cardImage(c)),
+        h('div', { class: 'meta' }, h('span', { class: 'num' }, `#${c.number}`), h('span', { class: 'name', title: c.name }, c.name)),
+        h('div', { class: 'set-sub' }, `${c.setName ?? ''}${c.releaseDate ? ` · ${c.releaseDate.slice(0, 4)}` : ''}`),
+        have.has(c.id) ? h('div', { class: 'set-sub' }, 'Already listed') : h('button', { class: 'small', onclick: () => matchCard(c) }, 'Match to this Pokémon'))))]
+        : [h('p', { class: 'muted' }, 'No cards found.')]));
+    } catch (err) {
+      results.replaceChildren(h('p', { class: 'error-text' }, err.message));
+    }
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') search(); });
+  return h('details', { class: 'match-panel' },
+    h('summary', {}, 'Match a card by hand'),
+    h('div', { class: 'toolbar' }, input, h('button', { onclick: search }, 'Search')),
+    results);
+}
+
+async function downloadSpeciesPdf(e) {
+  const btn = e.currentTarget;
+  const { game, name } = speciesView;
+  btn.disabled = true;
+  btn.textContent = 'Building PDF…';
+  try {
+    const res = await fetch(`/api/games/${game}/species/${encodeURIComponent(name)}/printable.pdf`);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `${res.status} ${res.statusText}`);
+    const url = URL.createObjectURL(await res.blob());
+    h('a', { href: url, download: `${name.replace(/[^\w.-]+/g, '_')}_master_set.pdf` }).click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    const missing = Number(res.headers.get('X-Missing-Images'));
+    toast(missing ? `PDF saved, but ${missing} card image(s) could not be loaded and are blank boxes` : 'PDF saved', !!missing);
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Printable PDF';
+  }
+}
+
+function renderSpecies() {
+  const { game, name, data } = speciesView;
+  const slots = data.slots;
+  const owned = (sl) => slotCopies(sl).length > 0;
+  const cardIds = [...new Set(slots.map((sl) => sl.cardId))];
+  const totals = { copies: 0, value: 0, paid: 0 };
+  for (const id of cardIds) {
+    const t = copyTotals(data.entries[id]);
+    totals.copies += t.copies; totals.value += t.value; totals.paid += t.paid;
+  }
+  const cardsOwned = cardIds.filter((id) => isOwned(data.entries[id])).length;
+  const noDex = slots.filter((sl) => sl.noDex);
+  const shown = slots.filter((sl) => speciesView.filter === 'all' || (speciesView.filter === 'owned') === owned(sl));
+
+  const groups = new Map();
+  for (const sl of shown) {
+    const key = sl.noDex ? 'nodex' : sl.setId ?? 'unknown';
+    if (!groups.has(key)) groups.set(key, { noDex: sl.noDex, id: sl.setId, name: sl.setName ?? 'Unknown set', date: sl.releaseDate, slots: [] });
+    groups.get(key).slots.push(sl);
+  }
+  const filters = [['all', 'All'], ['owned', 'Owned'], ['missing', 'Missing']];
+  const redraw = (f) => { speciesView.filter = f; renderSpecies(); };
+  const numericInput = /^#?\d+$/.test(data.species);
+  const dexInput = h('input', { type: 'number', min: 1, max: 9999, value: data.matches.dex ?? '', placeholder: autoDex(slots) ? `auto: ${autoDex(slots)}` : 'none found', 'aria-label': 'National Dex number' });
+  const saveDex = () => saveMatches({ dex: dexInput.value === '' ? null : Number(dexInput.value) });
+  dexInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveDex(); });
+  const firstSlots = new Set();
+
+  view.replaceChildren(
+    h('div', { class: 'set-header' },
+      h('a', { href: `#/game/${game}/species`, class: 'back' }, '← Pokémon'),
+      h('h1', {}, /^#?\d+$/.test(data.species) ? `Pokédex #${data.species.replace('#', '')}` : data.species),
+      slots.length
+        ? h('div', { class: 'stats' },
+            progressBar(slots.filter(owned).length, slots.length, 'Master set (every variant)'),
+            progressBar(cardsOwned, cardIds.length, 'Cards (any version)'),
+            h('div', { class: 'stat-line' }, h('span', {}, `${totals.copies} copies`), h('span', {}, `Paid ${money(Math.round(totals.paid * 100) / 100)}`), h('span', {}, `Value ${money(Math.round(totals.value * 100) / 100)}`)))
+        : h('p', { class: 'muted' }, 'No cards found. Check the spelling, or enter the National Dex number.'),
+    ),
+    h('div', { class: 'toolbar' },
+      h('div', { class: 'segmented' }, filters.map(([id, label]) =>
+        h('button', { class: speciesView.filter === id ? 'active' : null, onclick: () => redraw(id) }, label))),
+      !numericInput ? h('label', { class: 'dex-override', title: 'Wrong Pokémon? Force the National Dex number. Clear it to go back to automatic.' },
+        'Dex #', dexInput, h('button', { class: 'small', onclick: saveDex }, 'Set')) : null,
+      slots.length ? h('button', { class: 'ghost', onclick: downloadSpeciesPdf }, 'Printable PDF') : null,
+      h('button', { class: 'ghost', onclick: () => showSpecies(game, name, true).then(() => toast('Pokémon data refreshed')).catch((e) => toast(e.message, true)) }, 'Refresh from API'),
+    ),
+    ...(noDex.length ? [h('div', { class: 'notice' }, h('p', {},
+      `${new Set(noDex.map((sl) => sl.cardId)).size} card(s) have no Pokédex number in the database and are included because their name matches. They are listed last and printed last. Use Match to confirm one (it moves into the list by date) or Remove if it isn't this Pokémon.`))] : []),
+    ...(data.excluded.length ? [h('div', { class: 'notice' }, h('p', {}, 'Removed from this Pokémon: ',
+      data.excluded.map((c) => h('button', { class: 'link', title: 'Put it back', onclick: () => restoreCard(c.id) }, `${c.name ?? c.id}${c.setName ? ` (${c.setName})` : ''} · restore`))))] : []),
+    matchPanel(),
+    ...[...groups.values()].map((g) => h('section', { class: 'set-group' },
+      h('h2', {}, g.noDex ? 'No Pokédex number (name match)' : g.id ? h('a', { href: `#/game/${game}/set/${encodeURIComponent(g.id)}` }, g.name) : g.name,
+        g.date && !g.noDex ? h('span', { class: 'muted' }, ` · ${g.date}`) : null),
+      h('div', { class: 'grid' }, g.slots.map((sl) => {
+        const n = slotCopies(sl).length;
+        return h('div', { class: `tile ${n ? 'complete' : 'missing'}` },
+          h('button', { class: 'art', title: n ? 'Click to unmark (or open the set for details)' : 'Click to mark as owned', onclick: () => toggleSlot(sl) },
+            cardImage(sl), n ? h('span', { class: 'badge' }, n > 1 ? `×${n}` : '✓') : null),
+          h('div', { class: 'meta' }, h('span', { class: 'num' }, `#${sl.number}`), h('span', { class: 'name', title: sl.name }, sl.name)),
+          h('div', { class: 'set-sub' }, g.noDex ? `${sl.setName ?? ''} · ${sl.variant}` : sl.variant),
+          (() => {
+            if (firstSlots.has(sl.cardId)) return null;
+            firstSlots.add(sl.cardId);
+            if (sl.noDex) return h('div', { class: 'row' },
+              h('button', { class: 'small', title: 'This is a card of this Pokémon', onclick: () => matchCard(cardOf(sl)) }, 'Match'),
+              h('button', { class: 'ghost small', title: 'Not this Pokémon: remove from the list', onclick: () => excludeCard(sl.cardId) }, 'Remove'));
+            return sl.manual ? h('div', { class: 'row' },
+              h('span', { class: 'set-sub' }, 'Matched by hand'),
+              h('button', { class: 'ghost small', onclick: () => unmatchCard(sl.cardId) }, 'Unmatch')) : null;
+          })());
+      })),
+    )),
   );
 }
 

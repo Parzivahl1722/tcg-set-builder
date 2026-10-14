@@ -75,10 +75,16 @@ async function cardImage(card, { cacheDir, fetchImage }) {
 
 // Returns { doc, missing }: a PDFKit document (pipe it, it is already ended) and the cards whose
 // image could not be loaded. Those get an outlined box with the name so the grid stays aligned.
+// A card may appear in several slots (one per variant); its image is loaded once. A card's optional `label`
+// (e.g. the variant) is printed on a small tag at the bottom of its slot.
 export async function buildPrintable(cards, { title, cacheDir = null, fetchImage = download, concurrency = 8 } = {}) {
-  const images = await mapLimit(cards, concurrency, (c) => cardImage(c, { cacheDir, fetchImage }));
+  const unique = [...new Map(cards.map((c) => [c.id, c])).values()];
+  const loaded = await mapLimit(unique, concurrency, (c) => cardImage(c, { cacheDir, fetchImage }));
 
   const doc = new PDFDocument({ size: [PAGE.w, PAGE.h], margin: 0, info: { Title: title ? `${title} printable grid` : 'Printable grid' } });
+  // One image object per card, so a card repeated across variant slots is embedded in the PDF only once.
+  const byId = new Map(unique.map((c, i) => [c.id, loaded[i] && doc.openImage(loaded[i])]));
+  const images = cards.map((c) => byId.get(c.id));
   const gridW = COLS * CARD.w + (COLS - 1) * GAP;
   const gridH = ROWS * CARD.h + (ROWS - 1) * GAP;
   const x0 = (PAGE.w - gridW) / 2;
@@ -97,6 +103,12 @@ export async function buildPrintable(cards, { title, cacheDir = null, fetchImage
       doc.roundedRect(x, y, CARD.w, CARD.h, 8).lineWidth(0.75).stroke('#888888');
       doc.fillColor('#555555').fontSize(14).text(`#${card.number}`, x, y + CARD.h / 2 - 16, { width: CARD.w, align: 'center' });
       doc.fontSize(10).text(card.name, x, y + CARD.h / 2 + 4, { width: CARD.w, align: 'center' });
+    }
+    if (card.label) {
+      doc.fontSize(7);
+      const w = Math.min(CARD.w - 12, doc.widthOfString(card.label) + 12);
+      doc.roundedRect(x + (CARD.w - w) / 2, y + CARD.h - 16, w, 11, 5).fillAndStroke('#ffffff', '#555555');
+      doc.fillColor('#000000').text(card.label, x + (CARD.w - w) / 2, y + CARD.h - 14, { width: w, align: 'center', lineBreak: false });
     }
   });
   doc.end();
