@@ -214,7 +214,7 @@ function saveButton(game, type, name, saved) {
     try {
       await toggleSaved(game, type, name, saved);
       saved = !saved;
-      if (type === 'species') speciesView.saved = saved;
+      if (type === 'species') speciesView.saved = saved; else artistView.saved = saved;
       paint();
       toast(saved ? 'Saved to the home page' : 'Removed from the home page');
     } catch (err) {
@@ -252,15 +252,28 @@ async function showArtists(game) {
   );
 }
 
-const artistView = { filter: 'all' };
+const artistView = { filter: 'all', game: null, name: null, data: null, saved: false };
 
 async function showArtist(game, name, refresh = false) {
   view.replaceChildren(h('p', { class: 'loading' }, `Looking up ${name}… (first lookup can take a minute)`));
   const data = await api(`/api/games/${game}/artists/${encodeURIComponent(name)}${refresh ? '?refresh=1' : ''}`);
-  const { summary: sm } = data;
+  data.cards = data.cards.map((c) => ({ ...c, autoVariants: c.variants ?? [] }));
   const artistName = data.cards.find((c) => c.artist?.toLowerCase() === data.artist.toLowerCase())?.artist ?? data.artist;
-  const saved = await isSaved(game, 'artist', artistName);
-  const shown = data.cards.filter((c) => artistView.filter === 'all' || (artistView.filter === 'owned') === c.owned);
+  Object.assign(artistView, { game, name, data, artistName, saved: await isSaved(game, 'artist', artistName) });
+  ext = { game, entries: data.entries, rulesFor: (card) => data.rules[card.setId] ?? [], redraw: renderArtist };
+  renderArtist();
+}
+
+function renderArtist() {
+  const { game, name, data, artistName, saved } = artistView;
+  const y = window.scrollY;
+  const owned = (c) => isOwned(data.entries[c.id]);
+  const sm = { cards: data.cards.length, cardsOwned: data.cards.filter(owned).length, copies: 0, value: 0, paid: 0 };
+  for (const c of data.cards) {
+    const t = copyTotals(data.entries[c.id]);
+    sm.copies += t.copies; sm.value += t.value; sm.paid += t.paid;
+  }
+  const shown = data.cards.filter((c) => artistView.filter === 'all' || (artistView.filter === 'owned') === owned(c));
   const bySet = new Map();
   for (const c of shown) {
     const key = c.setId ?? 'unknown';
@@ -268,7 +281,6 @@ async function showArtist(game, name, refresh = false) {
     bySet.get(key).cards.push(c);
   }
   const filters = [['all', 'All'], ['owned', 'Owned'], ['missing', 'Missing']];
-  const redraw = () => showArtist(game, name);
   view.replaceChildren(
     h('div', { class: 'set-header' },
       h('a', { href: `#/game/${game}/artists`, class: 'back' }, '← Artists'),
@@ -276,23 +288,21 @@ async function showArtist(game, name, refresh = false) {
       sm.cards
         ? h('div', { class: 'stats' },
             progressBar(sm.cardsOwned, sm.cards, 'Cards owned'),
-            h('div', { class: 'stat-line' }, h('span', {}, `${sm.copies} copies`), h('span', {}, `Paid ${money(sm.paid)}`), h('span', {}, `Value ${money(sm.value)}`)))
+            h('div', { class: 'stat-line' }, h('span', {}, `${sm.copies} copies`), h('span', {}, `Paid ${money(Math.round(sm.paid * 100) / 100)}`), h('span', {}, `Value ${money(Math.round(sm.value * 100) / 100)}`)))
         : h('p', { class: 'muted' }, 'No cards found for that name. Check the spelling, or try a shorter form.'),
     ),
     h('div', { class: 'toolbar' },
       h('div', { class: 'segmented' }, filters.map(([id, label]) =>
-        h('button', { class: artistView.filter === id ? 'active' : null, onclick: () => { artistView.filter = id; redraw(); } }, label))),
+        h('button', { class: artistView.filter === id ? 'active' : null, onclick: () => { artistView.filter = id; renderArtist(); } }, label))),
       sm.cards ? saveButton(game, 'artist', artistName, saved) : null,
       h('button', { class: 'ghost', onclick: () => showArtist(game, name, true).then(() => toast('Artist data refreshed')).catch((e) => toast(e.message, true)) }, 'Refresh from API'),
     ),
     ...[...bySet.values()].map((g) => h('section', { class: 'set-group' },
       h('h2', {}, g.id ? h('a', { href: `#/game/${game}/set/${encodeURIComponent(g.id)}` }, g.name) : g.name, g.date ? h('span', { class: 'muted' }, ` · ${g.date}`) : null),
-      h('div', { class: 'grid' }, g.cards.map((c) => h('div', { class: `tile ${c.owned ? 'complete' : 'missing'}` },
-        h('a', { class: 'art', href: g.id ? `#/game/${game}/set/${encodeURIComponent(g.id)}` : null, title: c.owned ? 'Owned' : 'Missing' },
-          cardImage(c), c.owned ? h('span', { class: 'badge' }, c.copies > 1 ? `×${c.copies}` : '✓') : null),
-        h('div', { class: 'meta' }, h('span', { class: 'num' }, `#${c.number}`), h('span', { class: 'name', title: c.name }, c.name)))))),
-    ),
+      h('div', { class: 'grid' }, g.cards.map(tile)),
+    )),
   );
+  window.scrollTo(0, y);
 }
 
 // ---------- by Pokémon: one slot per card and variant ----------
@@ -312,40 +322,33 @@ function showSpeciesSearch(game) {
 const speciesView = { filter: 'all', game: null, name: null, data: null };
 
 async function showSpecies(game, name, refresh = false) {
-  if (!refresh && speciesView.data && speciesView.game === game && speciesView.name === name) return renderSpecies();
+  if (!refresh && speciesView.data && speciesView.game === game && speciesView.name === name) {
+    ext = { game, entries: speciesView.data.entries, rulesFor: (card) => speciesView.data.rules[card.setId] ?? [], dirty: false,
+      redraw: () => { const y = window.scrollY; renderSpecies(); window.scrollTo(0, y); }, onClose: () => { speciesView.data = null; showSpecies(game, name).catch((e) => toast(e.message, true)); } };
+    return renderSpecies();
+  }
   view.replaceChildren(h('p', { class: 'loading' }, `Looking up ${name}… (first lookup can take a minute)`));
   const data = await api(`/api/games/${game}/species/${encodeURIComponent(name)}${refresh ? '?refresh=1' : ''}`);
   Object.assign(speciesView, { game, name, data, saved: await isSaved(game, 'species', name) });
+  ext = {
+    game, entries: data.entries, rulesFor: (card) => data.rules[card.setId] ?? [], dirty: false,
+    redraw: () => { const y = window.scrollY; renderSpecies(); window.scrollTo(0, y); },
+    onClose: () => { speciesView.data = null; const y = window.scrollY; showSpecies(game, name).then(() => window.scrollTo(0, y)).catch((e) => toast(e.message, true)); },
+  };
   renderSpecies();
 }
 
 const slotCopies = (slot) => speciesView.data.entries[slot.cardId]?.variants?.[slot.variant] ?? [];
 
-// Click a slot: add a plain copy if you own none; remove a lone untouched copy; otherwise send you to the
-// set page, where copies with a grade or price can be edited without losing details by misclick.
-async function toggleSlot(slot) {
-  const { game, data } = speciesView;
-  const before = data.entries[slot.cardId];
+// Click a slot: add a plain copy if you own none; remove a lone untouched copy; otherwise open the card's
+// details (condition, grade, price) here, so a misclick can't wipe a copy you've recorded details for.
+function toggleSlot(slot) {
   const copies = slotCopies(slot);
-  if (copies.length && !(copies.length === 1 && isPlain(copies[0]))) {
-    location.hash = `#/game/${game}/set/${encodeURIComponent(slot.setId)}`;
-    return;
-  }
-  const next = structuredClone(before ?? blankEntry());
-  if (copies.length) next.variants[slot.variant] = [];
-  else (next.variants[slot.variant] ??= []).push(newCopy());
-  for (const [v, cs] of Object.entries(next.variants)) if (!cs.length) delete next.variants[v];
-  data.entries[slot.cardId] = next;
-  renderSpecies();
-  try {
-    data.entries[slot.cardId] = await api(`/api/games/${game}/cards/${encodeURIComponent(slot.cardId)}`, { method: 'PUT', body: JSON.stringify(next) });
-  } catch (err) {
-    if (before) data.entries[slot.cardId] = before; else delete data.entries[slot.cardId];
-    toast(`Not saved: ${err.message}`, true);
-  }
-  state.sets[game] = null; // progress on the home page is now stale
-  state.collections[game] = null;
-  renderSpecies();
+  if (copies.length && !(copies.length === 1 && isPlain(copies[0]))) return openCard(slot);
+  return saveEntry(slot, (e) => {
+    if (copies.length) e.variants[slot.variant] = [];
+    else (e.variants[slot.variant] ??= []).push(newCopy());
+  });
 }
 
 // Corrections for this Pokémon (forced dex, hand-matched cards, removed cards) are saved server-side, then the page reloads.
@@ -487,9 +490,10 @@ function renderSpecies() {
       h('div', { class: 'grid' }, g.slots.map((sl) => {
         const n = slotCopies(sl).length;
         return h('div', { class: `tile ${n ? 'complete' : 'missing'}` },
-          h('button', { class: 'art', title: n ? 'Click to unmark (or open the set for details)' : 'Click to mark as owned', onclick: () => toggleSlot(sl) },
+          h('button', { class: 'art', title: n ? 'Click to unmark (or open details)' : 'Click to mark as owned', onclick: () => toggleSlot(sl) },
             cardImage(sl), n ? h('span', { class: 'badge' }, n > 1 ? `×${n}` : '✓') : null),
-          h('div', { class: 'meta' }, h('span', { class: 'num' }, `#${sl.number}`), h('span', { class: 'name', title: sl.name }, sl.name)),
+          h('div', { class: 'meta' }, h('span', { class: 'num' }, `#${sl.number}`), h('span', { class: 'name', title: sl.name }, sl.name),
+            h('button', { class: 'info', title: 'Details, condition, grade, price', onclick: () => openCard(sl) }, '⋯')),
           h('div', { class: 'set-sub' }, g.noDex ? `${sl.setName ?? ''} · ${sl.variant}` : sl.variant),
           (() => {
             if (firstSlots.has(sl.cardId)) return null;
@@ -515,16 +519,25 @@ async function showSet(game, setId, refresh = false) {
   state.current = { game, ...data };
   state.sets[game] = null; // progress on the home page is now stale
   state.collections[game] = null;
+  ext = null;
   renderSet();
 }
 
+// Where card edits go: the open set, or the artist / Pokémon page when `ext` is set (those pages edit copies in place).
+let ext = null;
+function ctxOf() {
+  if (ext) return ext;
+  const cur = state.current;
+  return { game: cur.game, entries: cur.entries, rulesFor: () => cur.rules, redraw: renderSetKeepingFocus };
+}
+
 function variantsOf(card) {
-  const { entries, rules } = state.current;
-  return resolveVariants({ ...card, variants: card.autoVariants }, entries[card.id], rules);
+  const { entries, rulesFor } = ctxOf();
+  return resolveVariants({ ...card, variants: card.autoVariants }, entries[card.id], rulesFor(card));
 }
 
 function copiesOf(card, variant) {
-  return state.current.entries[card.id]?.variants?.[variant] ?? [];
+  return ctxOf().entries[card.id]?.variants?.[variant] ?? [];
 }
 
 function cardState(card) {
@@ -656,11 +669,12 @@ const isPlain = (c) => c.condition === 'NM' && c.grader === 'Raw' && !c.grade &&
 const blankEntry = () => ({ variants: {}, customVariants: [], hiddenVariants: [] });
 
 function totalCopies(card) {
-  return Object.values(state.current.entries[card.id]?.variants ?? {}).reduce((n, cs) => n + cs.length, 0);
+  return Object.values(ctxOf().entries[card.id]?.variants ?? {}).reduce((n, cs) => n + cs.length, 0);
 }
 
 async function saveEntry(card, mutate, { redrawModal = true } = {}) {
-  const { entries, game } = state.current;
+  const { entries, game } = ctxOf();
+  if (ext) ext.dirty = true;
   const before = entries[card.id];
   const next = structuredClone(before ?? blankEntry());
   mutate(next);
@@ -669,6 +683,8 @@ async function saveEntry(card, mutate, { redrawModal = true } = {}) {
   rerender(card, redrawModal);
   try {
     entries[card.id] = await api(`/api/games/${game}/cards/${encodeURIComponent(card.id)}`, { method: 'PUT', body: JSON.stringify(next) });
+    state.sets[game] = null; // progress on the home page is now stale
+    state.collections[game] = null;
   } catch (err) {
     if (before) entries[card.id] = before; else delete entries[card.id];
     rerender(card);
@@ -677,7 +693,7 @@ async function saveEntry(card, mutate, { redrawModal = true } = {}) {
 }
 
 function rerender(card, redrawModal = true) {
-  renderSetKeepingFocus();
+  ctxOf().redraw();
   if (redrawModal && modal.open && modal.dataset.card === card.id) renderCardModal(card);
 }
 
@@ -690,7 +706,7 @@ function clickArt(card) {
     if (!first) return openCard(card);
     return saveEntry(card, (e) => { e.variants[first] = [newCopy()]; });
   }
-  const all = Object.values(state.current.entries[card.id].variants).flat();
+  const all = Object.values(ctxOf().entries[card.id].variants).flat();
   if (total === 1 && isPlain(all[0])) return saveEntry(card, (e) => { e.variants = {}; });
   openCard(card);
 }
@@ -717,9 +733,9 @@ function openCard(card) {
 }
 
 function renderCardModal(card) {
-  const entry = state.current.entries[card.id] ?? blankEntry();
+  const entry = ctxOf().entries[card.id] ?? blankEntry();
   const variants = variantsOf(card);
-  const fromRules = new Set(state.current.rules.filter((r) => !r.rarities.length || r.rarities.includes(card.rarity)).map((r) => r.name));
+  const fromRules = new Set(ctxOf().rulesFor(card).filter((r) => !r.rarities.length || r.rarities.includes(card.rarity)).map((r) => r.name));
   // Variants with copies but no longer listed (e.g. hidden) still show, so no copy is ever invisible.
   const orphaned = Object.keys(entry.variants).filter((v) => !variants.includes(v));
   const { conditions, graders } = state.meta;
@@ -842,5 +858,7 @@ function openRules() {
 }
 
 modal.addEventListener('click', (e) => { if (e.target === modal) modal.close(); });
+// Variants added or hidden in the modal change the Pokémon page's slots, so reload it once the modal closes.
+modal.addEventListener('close', () => { if (ext?.dirty) { ext.dirty = false; ext.onClose?.(); } });
 window.addEventListener('hashchange', route);
 route();

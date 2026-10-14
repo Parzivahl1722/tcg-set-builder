@@ -106,6 +106,9 @@ export function createApp({ sources, cache, store, printable = {} }) {
     doc.pipe(res);
   }));
 
+  // Variant rules of every set the cards come from, so the page can edit copies without opening the set.
+  const rulesBySet = (s, cards) => Object.fromEntries([...new Set(cards.map((c) => c.setId).filter(Boolean))].map((id) => [id, store.rulesFor(s.id, id)]));
+
   const artistSource = (req, res) => {
     const s = source(req, res);
     if (s && typeof s.fetchCardsByArtist !== 'function') {
@@ -169,6 +172,8 @@ export function createApp({ sources, cache, store, printable = {} }) {
       artist: req.params.name.trim(),
       summary,
       cards: cards.map((c) => ({ ...c, owned: isOwned(entries[c.id]), copies: copyTotals(entries[c.id]).copies })),
+      entries,
+      rules: rulesBySet(s, cards),
     });
   }));
 
@@ -219,10 +224,10 @@ export function createApp({ sources, cache, store, printable = {} }) {
     const slots = [];
     for (const { variants, ...card } of cards) {
       for (const variant of resolveVariants({ ...card, variants }, entries[card.id], store.rulesFor(s.id, card.setId))) {
-        slots.push({ ...card, cardId: card.id, variant });
+        slots.push({ ...card, cardId: card.id, variant, autoVariants: variants });
       }
     }
-    return { slots, entries, matches, excluded: excludedCards };
+    return { slots, entries, matches, excluded: excludedCards, rules: rulesBySet(s, cards) };
   }
 
   app.get('/api/games/:game/species/:name', wrap(async (req, res) => {
