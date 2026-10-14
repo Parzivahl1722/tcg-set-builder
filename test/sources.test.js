@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { artistMatches, fetchCardsByArtist, normArtistCard, normCard as pokeCard, pokemonVariants } from '../server/sources/pokemon.js';
+import { adjustCard, artistMatches, fetchCardsByArtist, fetchCardsBySpecies, resolveDex, searchCards, selectSpecies, normArtistCard, normCard as pokeCard, pokemonVariants } from '../server/sources/pokemon.js';
 import { normCard as lorCard, lorcanaVariants } from '../server/sources/lorcana.js';
 
 test('pokemon variants come from tcgplayer price keys', () => {
@@ -197,4 +197,111 @@ test('an artist TCGdex has never heard of is an empty result, not an error', asy
   const { fetchSupplementCardsByArtist } = await import('../server/sources/pokemon.js');
   t.mock.method(globalThis, 'fetch', respond([['tcgdex.net/v2/en/sets', []]]));
   assert.deepEqual(await fetchSupplementCardsByArtist('Nobody', []), { cards: [], skipped: 0 });
+});
+
+test('adjustCard drops Reverse Holo only in sets where every card is foil', () => {
+  const card = (id, variants) => ({ id, variants });
+  assert.deepEqual(adjustCard(card('me55-1', ['Normal', 'Reverse Holo'])).variants, ['Normal']);
+  assert.deepEqual(adjustCard(card('me55-9', ['Holo', 'Reverse Holo'])).variants, ['Holo']);
+  assert.deepEqual(adjustCard(card('me55c-58', ['Normal', 'Reverse Holo'])).variants, ['Normal']);
+  // Other sets, including the 2021 Celebrations Classic Collection, are untouched.
+  const kept = card('cel25c-4', ['Normal', 'Reverse Holo']);
+  assert.equal(adjustCard(kept), kept);
+  const sv = card('sv1-1', ['Normal', 'Reverse Holo']);
+  assert.equal(adjustCard(sv), sv);
+  // A set id that merely starts the same way is not a match.
+  assert.deepEqual(adjustCard(card('me55x-1', ['Normal', 'Reverse Holo'])).variants, ['Normal', 'Reverse Holo']);
+});
+
+const dexCard = (id, name, nationalPokedexNumbers, extra = {}) => ({ id, number: '1', name, supertype: 'Pokémon', nationalPokedexNumbers, ...extra });
+
+test('resolveDex votes on cards named exactly that, ignoring form suffixes and accents', () => {
+  const cards = [
+    dexCard('a', 'Pikachu', [25]), dexCard('b', 'Pikachu VMAX', [25]), dexCard('c', 'Pikachu-GX', [25]),
+    dexCard('d', 'Pikachu & Zekrom-GX', [25, 644]), dexCard('e', 'Raichu', [26]), dexCard('f', 'Flabébé', [669]),
+  ];
+  assert.equal(resolveDex(cards, 'pikachu'), 25);
+  assert.equal(resolveDex(cards, 'Flabebe'), 669);
+  assert.equal(resolveDex(cards, 'Nope'), null);
+  // Only form-named cards exist: fall back to containment.
+  assert.equal(resolveDex([dexCard('g', 'Detective Pikachu', [25])], 'Pikachu'), 25);
+});
+
+test('selectSpecies takes dex matches (multi-species too) and name matches that have no dex', () => {
+  const cards = [
+    dexCard('a', 'Pikachu', [25]),
+    dexCard('b', 'Pikachu & Zekrom-GX', [25, 644]),
+    dexCard('c', 'Pikachu Libre', [], { supertype: 'Trainer' }),
+    dexCard('d', "Ash's Pikachu", undefined, { supertype: 'Trainer' }),
+    dexCard('e', 'Pikachuman', undefined),
+    dexCard('f', 'Raichu', [26]),
+    dexCard('g', 'Pikachu clone', [999]),
+    dexCard('a', 'Pikachu', [25]),
+  ];
+  assert.deepEqual(selectSpecies(cards, { dex: 25, name: 'Pikachu' }).map((c) => c.id), ['a', 'b', 'c', 'd']);
+  // A bare dex number has no name to match, so no-dex cards are not guessed at.
+  assert.deepEqual(selectSpecies(cards, { dex: 26 }).map((c) => c.id), ['f']);
+});
+
+test('species lookup resolves the name, then queries by dex number', async (t) => {
+  const urls = [];
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    const u = decodeURIComponent(String(url));
+    urls.push(u);
+    const set = { id: 'a', name: 'A', releaseDate: '2020/01/01' };
+    const rows = u.includes('nationalPokedexNumbers:25')
+      ? [dexCard('a-1', 'Pikachu', [25], { set }), dexCard('a-2', 'Pikachu V', [25], { set })]
+      : [dexCard('a-1', 'Pikachu', [25], { set }), dexCard('a-3', 'Pikachu Libre', undefined, { supertype: 'Trainer', set })];
+    return Response.json({ totalCount: rows.length, data: rows });
+  });
+  const cards = await fetchCardsBySpecies('pikachu');
+  assert.match(urls[0], /q=name:"pikachu"/);
+  assert.match(urls[1], /q=nationalPokedexNumbers:25/);
+  assert.deepEqual(cards.map((c) => [c.id, c.dex.length === 0, c.setName, c.releaseDate]), [
+    ['a-1', false, 'A', '2020-01-01'], ['a-2', false, 'A', '2020-01-01'], ['a-3', true, 'A', '2020-01-01'],
+  ]);
+});
+
+test('species lookup by dex number skips the name query; falls back to the data repo', async (t) => {
+  const urls = [];
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    const u = String(url);
+    urls.push(decodeURIComponent(u));
+    if (u.includes('api.pokemontcg.io')) return new Response('down', { status: 503 });
+    if (u.endsWith('/sets/en.json')) return Response.json([{ id: 'a', name: 'A', releaseDate: '2020/01/01' }]);
+    return Response.json([dexCard('a-1', 'Pikachu', [25]), dexCard('a-2', 'Raichu', [26])]);
+  });
+  const cards = await fetchCardsBySpecies('#25');
+  assert.match(urls[0], /q=nationalPokedexNumbers:25/);
+  assert.deepEqual(cards.map((c) => [c.id, c.setName]), [['a-1', 'A']]);
+});
+
+test('a forced dex overrides the name lookup but still matches no-dex cards by name', async (t) => {
+  const urls = [];
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    const u = decodeURIComponent(String(url));
+    urls.push(u);
+    const rows = u.includes('nationalPokedexNumbers:26')
+      ? [dexCard('r-1', 'Raichu', [26])]
+      : [dexCard('p-1', 'Pikachu', [25]), dexCard('p-2', 'Pikachu Libre', [], { supertype: 'Trainer' })];
+    return Response.json({ totalCount: rows.length, data: rows });
+  });
+  const cards = await fetchCardsBySpecies('pikachu', { dex: 26 });
+  assert.match(urls[1], /nationalPokedexNumbers:26/);
+  assert.deepEqual(cards.map((c) => c.id).sort(), ['p-2', 'r-1']);
+});
+
+test('card search takes partial words, keeps name matches, and falls back to the data repo', async (t) => {
+  assert.deepEqual(await searchCards('a'), []);
+  const urls = [];
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    const u = String(url);
+    urls.push(decodeURIComponent(u));
+    if (u.includes('api.pokemontcg.io')) return new Response('down', { status: 503 });
+    if (u.endsWith('/sets/en.json')) return Response.json([{ id: 'a', name: 'A', releaseDate: '2020/01/01' }]);
+    return Response.json([dexCard('a-1', 'Pikachu Libre', []), dexCard('a-2', 'Raichu', [26])]);
+  });
+  const cards = await searchCards('chu lib');
+  assert.match(urls[0], /q=name:"chu lib"/);
+  assert.deepEqual(cards.map((c) => [c.id, c.setName]), [['a-1', 'A']]);
 });

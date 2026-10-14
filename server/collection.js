@@ -56,6 +56,54 @@ export function sanitizeEntry(e = {}) {
   return { variants, customVariants: strList(e.customVariants), hiddenVariants: strList(e.hiddenVariants) };
 }
 
+const safeUrl = (v) => (typeof v === 'string' && /^https:\/\//.test(v) ? v.slice(0, 300) : null);
+const dexNumber = (v) => (Number.isInteger(v) && v > 0 && v < 10000 ? v : null);
+
+// A card the user matched to a Pokémon by hand, kept whole so it still shows when the API is down.
+export function sanitizeMatchedCard(c = {}) {
+  const id = str(c.id, 80);
+  if (!id) return null;
+  return {
+    id,
+    number: str(c.number, 20),
+    name: str(c.name, 100),
+    rarity: str(c.rarity, 60) || 'Unknown',
+    artist: str(c.artist, 100) || null,
+    image: safeUrl(c.image),
+    imageLarge: safeUrl(c.imageLarge),
+    variants: strList(c.variants),
+    setId: str(c.setId, 40) || null,
+    setName: str(c.setName, 100) || null,
+    releaseDate: /^\d{4}-\d{2}-\d{2}$/.test(c.releaseDate ?? '') ? c.releaseDate : null,
+    supertype: str(c.supertype, 30) || null,
+    dex: (Array.isArray(c.dex) ? c.dex : []).map(dexNumber).filter(Boolean).slice(0, 10),
+  };
+}
+
+// Per-Pokémon corrections: a forced National Dex number, cards matched by hand, and cards removed from the list.
+export function sanitizeSpeciesMatches(r = {}) {
+  const include = new Map();
+  for (const c of (Array.isArray(r.include) ? r.include : []).slice(0, 2000)) {
+    const card = sanitizeMatchedCard(c);
+    if (card && !include.has(card.id)) include.set(card.id, card);
+  }
+  const exclude = (Array.isArray(r.exclude) ? [...new Set(r.exclude.map((x) => str(x, 80)).filter(Boolean))] : [])
+    .filter((id) => !include.has(id)).slice(0, 2000);
+  return { dex: dexNumber(r.dex), include: [...include.values()], exclude };
+}
+
+export const COLLECTION_TYPES = ['species', 'artist'];
+
+// A saved lookup shown on the home page like a set: a Pokémon or an artist, by the name the user typed.
+export function sanitizeCollectionRef(r = {}) {
+  const name = str(r.name, 100);
+  const key = normArtist(name);
+  if (!COLLECTION_TYPES.includes(r.type) || !key) return null;
+  return { id: `${r.type}:${key}`, type: r.type, name };
+}
+
+export const isEmptySpeciesMatches = (m) => m.dex == null && !m.include.length && !m.exclude.length;
+
 export function isEmptyEntry(e) {
   return !Object.keys(e.variants).length && !e.customVariants.length && !e.hiddenVariants.length;
 }

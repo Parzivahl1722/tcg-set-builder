@@ -234,3 +234,15 @@ a.art { text-decoration: none; }
 .artist-row { display: grid; gap: 4px; margin-top: 6px; }
 .artist-row .row { display: flex; gap: 6px; }
 .artist-row input { flex: 1; min-width: 0; }
+
+.dex-override { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.dex-override input { width: 90px; }
+.match-panel { margin-bottom: 16px; }
+.match-panel summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+.search-results { margin-top: 12px; }
+.tile .row { display: flex; gap: 6px; align-items: center; }
+.error-text { color: #b3261e; }
+
+.set-row-wrap { position: relative; }
+.set-row-wrap .set-row { display: flex; }
+.row-remove { position: absolute; top: 8px; right: 8px; }

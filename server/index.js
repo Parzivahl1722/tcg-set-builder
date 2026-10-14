@@ -13,7 +13,7 @@ const port = Number(process.env.PORT ?? 3000);
 const backupKeep = Number.isFinite(Number(process.env.BACKUP_KEEP)) ? Number(process.env.BACKUP_KEEP) : 30;
 const store = await createStore(path.join(dataDir, 'collection.json'), { backupKeep });
 const cache = createCache(path.join(dataDir, 'cache'));
-const app = createApp({ sources: { pokemon, lorcana }, cache, store });
+const app = createApp({ sources: { pokemon, lorcana }, cache, store, printable: { cacheDir: path.join(dataDir, 'cache', 'printable') } });
 
 // Bound to localhost: there is no login, so don't expose it to the network.
 app.listen(port, '127.0.0.1', () => {

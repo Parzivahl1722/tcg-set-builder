@@ -21,6 +21,7 @@ On a Mac you can instead double-click `start.command`. It installs dependencies 
 
 - **Click a card** to add one copy and turn it color. Click again to remove it. If that copy has details recorded (grade, price, notes), clicking opens the detail panel instead, so a misclick can't delete it.
 - **Variant pills** under each card (Normal, Reverse Holo, Foil…) toggle each printing separately. A badge like `1/3` means you own some variants but not all.
+- **Printable PDF** (button on every set page) downloads a grayscale checklist: nine cards per US Letter page at true size (2.5 x 3.5 in), one slot per card in set order. Print it and color in what you own. The first build downloads every card image (about 20 seconds for 160 cards); grayscale copies are cached in `data/cache/printable/`, so later builds are quick. Cards whose image can't be loaded print as an outlined box so the grid stays aligned.
 - **⋯ opens details**: multiple copies per variant, condition, grader and grade (PSA, BGS, CGC, SGC, TAG), price paid, current value, date acquired, notes.
 - **Two progress bars per set**: *Cards* counts a card once you own any version. *Master set* counts every variant.
 
@@ -39,9 +40,29 @@ On a Mac you can instead double-click `start.command`. It installs dependencies 
 - Artist matching on TCGdex is by exact name, so cards that credit several artists in one string only show up if the Pokémon TCG data has them.
 - Lorcana has no artist page.
 
+### By Pokémon (Pokémon)
+
+**By Pokémon** on the Pokémon set list builds a master set for one Pokémon across every set. Type a name (`Pikachu`) or a National Dex number (`25`).
+
+- One slot per card **and variant** (Normal, Reverse Holo, Holo…), oldest set first. Variants follow each set's rules and each card's hidden or custom variants, so the page agrees with the set pages. Click a slot to add or remove a plain copy; a slot with graded or priced copies sends you to its set page instead.
+- Cards come from the Pokémon TCG API's `nationalPokedexNumbers` field, so "Pikachu & Zekrom-GX" shows under both Pokémon and name variants ("Flying Pikachu") are all found.
+- Cards with **no dex number** in the database are not dropped: if their name contains the Pokémon's name they are listed in a separate section at the end, and printed last. Most are Trainers and Energy (about 3,200 of 20,600 cards); a few real Pokémon (Paradox Pokémon such as Flutter Mane) lack a number too, so they only ever appear in this section.
+- **Match** confirms a no-dex card: it moves into the dated list and into the PDF in date order (and stays marked "Matched by hand"; **Unmatch** reverses it). **Remove** drops a card that isn't this Pokémon, with a **restore** link at the top of the page. **Match a card by hand** searches every card by name (partial names work) and adds one the automatic lookup missed.
+- **Dex #** (next to the filters) forces the National Dex number when the name resolves to the wrong Pokémon or none. Clear it to go back to automatic. The box shows the number the lookup chose.
+- These corrections are stored in your collection file per Pokémon (`speciesMatches`), so they are included in backups and **Export backup**.
+- **Printable PDF** is the same 3x3 sheet as a set, one slot per variant, with the variant printed on a tag at the bottom of each card. A card with two variants prints twice.
+- Results are cached for 7 days (**Refresh from API** forces an update). If the API is down it scans the GitHub data dump, which is slower and has no price data, so it guesses variants from rarity.
+
+### Saved collections
+
+**☆ Save to home** (on any By artist or By Pokémon page) adds that lookup to a **My collections** list at the top of the Pokémon home page, with a progress bar like a set. A Pokémon shows its master-set progress (every variant); an artist shows cards owned. Click a row to open it; **✕** removes it from the list without touching your cards. The list is stored in the collection file (`savedCollections`), so it is in backups and **Export backup**.
+
+Progress on the home page comes only from lookups already cached (even if older than 7 days), so it never waits on the API. A saved lookup that has never loaded shows "Not opened yet" until you open it once.
+
 ### Sets from TCGdex
 
 Sets the Pokémon TCG data doesn't have yet (for example **MEP Black Star Promos**) are added to the set list from TCGdex, so you can track them like any other set. Only recent sets are merged (released 2025 or later), and Pokémon TCG Pocket is left out; older sets TCGdex names differently are mostly duplicates. The first time you open one of these sets it fetches every card individually, so it can take a minute. TCGdex is also the last-resort card source for any set the Pokémon TCG API and its GitHub data both fail on. Cards in these sets are saved under ids like `mep-5`; if the Pokémon TCG API later adds the same set under another id, your marks on the old ids won't carry over.
+
 
 ### Variants
 

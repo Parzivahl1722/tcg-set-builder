@@ -40,6 +40,24 @@ fake.fetchCardsByArtist = async (name) => {
   ];
 };
 
+fake.searchCards = async (q) => {
+  assert.equal(q, 'libre');
+  return [{ id: 'xy-1', number: '1', name: 'Pikachu Libre', rarity: 'Rare', image: 'http://insecure.test/a.png', variants: ['Holo'], setId: 'xy', setName: 'XY', releaseDate: '2014-02-05', dex: [] }];
+};
+
+fake.fetchCardsBySpecies = async (name, opts = {}) => {
+  calls.species = (calls.species ?? 0) + 1;
+  calls.speciesOpts = opts;
+  assert.equal(name, 'Pikachu');
+  const card = (id, number, setId, setName, releaseDate, dex, extra = {}) =>
+    ({ id, number, name: 'Pikachu', rarity: 'Common', image: null, imageLarge: null, variants: ['Normal', 'Reverse Holo'], setId, setName, releaseDate, dex, ...extra });
+  return [
+    card('sv1-2', '2', 'sv1', 'Scarlet & Violet', '2023-03-31', [25]),
+    card('nodex-1', '5', 'zz', 'Odd Set', '2015-01-01', [], { name: 'Pikachu Libre', variants: ['Normal'] }),
+    card('old-1', '1', 'old', 'Old Set', '2010-01-01', [25], { variants: ['Normal'] }),
+  ];
+};
+
 const json = async (url, opts = {}) => {
   const res = await fetch(base + url, { ...opts, headers: { 'Content-Type': 'application/json' } });
   return { status: res.status, body: await res.json() };
@@ -217,4 +235,116 @@ test('artist overrides are in the export and reject unsupported games', async ()
   const { body } = await json('/api/export');
   assert.equal(body.artistOverrides['pokemon:sv1-10'], 'Yuka Morii');
   assert.equal((await json('/api/games/mtg/cards/x/artist', { method: 'PUT', body: '{}' })).status, 404);
+});
+
+test('species page lists one slot per variant, oldest first, with no-dex cards last', async () => {
+  const { status, body } = await json('/api/games/pokemon/species/Pikachu');
+  assert.equal(status, 200);
+  // sv1 has the "Poké Ball Reverse" rule from an earlier test, and sv1-2 owns a Reverse Holo copy.
+  assert.deepEqual(body.slots.map((sl) => [sl.cardId, sl.variant, sl.noDex]), [
+    ['old-1', 'Normal', false],
+    ['sv1-2', 'Normal', false],
+    ['sv1-2', 'Reverse Holo', false],
+    ['sv1-2', 'Poké Ball Reverse', false],
+    ['nodex-1', 'Normal', true],
+  ]);
+  assert.equal(body.entries['sv1-2'].variants['Reverse Holo'].length, 1);
+  await json('/api/games/pokemon/species/Pikachu');
+  assert.equal(calls.species, 1, 'second lookup should hit the cache');
+});
+
+test('species PDF has one labeled slot per variant', async () => {
+  const res = await fetch(`${base}/api/games/pokemon/species/Pikachu/printable.pdf`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-disposition'), /Pikachu_master_set\.pdf/);
+  assert.equal(res.headers.get('x-missing-images'), '3', 'three distinct cards have no image');
+  assert.equal(Buffer.from(await res.arrayBuffer()).subarray(0, 5).toString(), '%PDF-');
+});
+
+test('species lookup rejects blank names and games without it', async () => {
+  assert.equal((await json('/api/games/pokemon/species/%20')).status, 400);
+  assert.equal((await json('/api/games/mtg/species/Pikachu')).status, 404);
+});
+
+test('matching by hand: confirm a no-dex card, remove one, force the dex, search and add', async () => {
+  const put = (body) => json('/api/games/pokemon/species/Pikachu/matches', { method: 'PUT', body: JSON.stringify(body) });
+  const slots = async () => (await json('/api/games/pokemon/species/Pikachu')).body;
+
+  // Confirming nodex-1 moves it into the dated list: 2015 sits between 2010 and 2023.
+  const libre = (await slots()).slots.find((sl) => sl.cardId === 'nodex-1');
+  const confirmed = await put({ include: [{ ...libre, variants: ['Normal'] }] });
+  assert.equal(confirmed.body.include[0].id, 'nodex-1');
+  let body = await slots();
+  assert.deepEqual([...new Set(body.slots.map((sl) => sl.cardId))], ['old-1', 'nodex-1', 'sv1-2']);
+  assert.ok(body.slots.every((sl) => !sl.noDex));
+  assert.equal(body.slots[1].manual, true);
+
+  // Removing a card drops it from the slots and the PDF, and reports it so it can be restored.
+  await put({ exclude: ['sv1-2'] });
+  body = await slots();
+  assert.deepEqual([...new Set(body.slots.map((sl) => sl.cardId))], ['old-1', 'nodex-1']);
+  assert.deepEqual(body.excluded.map((c) => c.id), ['sv1-2']);
+  assert.equal(body.slots.find((sl) => sl.cardId === 'nodex-1').noDex, true, 'unmatched again once the include is gone');
+
+  // A forced dex reaches the source and uses its own cache entry.
+  const before = calls.species;
+  await put({ dex: 25 });
+  await slots();
+  assert.equal(calls.speciesOpts.dex, 25);
+  assert.equal(calls.species, before + 1);
+  await slots();
+  assert.equal(calls.species, before + 1, 'cached under the new key');
+  assert.equal((await json('/api/games/pokemon/species/Pikachu')).body.matches.dex, 25);
+
+  // Search results are sanitized (no http image) and can be added.
+  const found = await json('/api/games/pokemon/card-search?q=libre');
+  assert.equal(found.body[0].image, null);
+  await put({ dex: 25, include: [found.body[0]] });
+  assert.ok((await slots()).slots.some((sl) => sl.cardId === 'xy-1' && sl.manual));
+
+  // Clearing everything removes the record from the file.
+  await put({});
+  const saved = JSON.parse(await fs.readFile(path.join(dir, 'collection.json'), 'utf8'));
+  assert.equal(saved.speciesMatches['pokemon:pikachu'], undefined);
+});
+
+test('matches reject blank names and bad dex numbers', async () => {
+  const bad = await json('/api/games/pokemon/species/%20/matches', { method: 'PUT', body: '{}' });
+  assert.equal(bad.status, 400);
+  const sane = await json('/api/games/pokemon/species/Pikachu/matches', { method: 'PUT', body: JSON.stringify({ dex: -3, include: [{ name: 'no id' }], exclude: [42] }) });
+  assert.deepEqual(sane.body, { dex: null, include: [], exclude: [] });
+});
+
+test('saved collections list on the home page with progress from cached lookups only', async () => {
+  const put = (type, name) => json(`/api/games/pokemon/collections/${type}/${encodeURIComponent(name)}`, { method: 'PUT' });
+  assert.deepEqual((await json('/api/games/pokemon/collections')).body, []);
+
+  await put('species', 'Pikachu');
+  await put('artist', 'Yuka Morii');
+  await put('species', 'Raichu');
+  const before = { ...calls };
+  const { body } = await json('/api/games/pokemon/collections');
+  assert.deepEqual(body.map((c) => [c.id, c.name]), [['species:pikachu', 'Pikachu'], ['artist:yuka morii', 'Yuka Morii'], ['species:raichu', 'Raichu']]);
+  // Both were looked up earlier, so they have progress; Raichu never was, so listing it must not call the API.
+  assert.equal(body[0].progress.cards, 3);
+  assert.equal(body[0].progress.variantsOwned, 1, 'only the sv1-2 Reverse Holo copy from an earlier test is owned');
+  // 3 from the database plus the 2 cards assigned to this artist by hand in an earlier test.
+  assert.equal(body[1].progress.cards, 5, 'saved-collection progress counts hand-assigned cards, like the artist page');
+  assert.equal(body[1].progress.cardsOwned, 3);
+  assert.equal(body[2].progress, null);
+  assert.deepEqual([calls.species, calls.artist], [before.species, before.artist]);
+
+  // Saving again with different capitals replaces the entry; removing drops it.
+  await put('species', 'PIKACHU');
+  assert.deepEqual((await json('/api/games/pokemon/collections')).body.map((c) => c.name), ['Yuka Morii', 'Raichu', 'PIKACHU']);
+  const del = await json('/api/games/pokemon/collections/species/raichu', { method: 'DELETE' });
+  assert.deepEqual(del.body.map((c) => c.id), ['artist:yuka morii', 'species:pikachu']);
+  const saved = JSON.parse(await fs.readFile(path.join(dir, 'collection.json'), 'utf8'));
+  assert.equal(saved.savedCollections.pokemon.length, 2);
+});
+
+test('saved collections reject bad types and blank names, and unsupported games', async () => {
+  assert.equal((await json('/api/games/pokemon/collections/set/x', { method: 'PUT' })).status, 400);
+  assert.equal((await json('/api/games/pokemon/collections/species/%20', { method: 'PUT' })).status, 400);
+  assert.equal((await json('/api/games/mtg/collections')).status, 404);
 });

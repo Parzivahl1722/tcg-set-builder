@@ -68,3 +68,13 @@ test('a hand assignment still beats the second database', async () => {
   const { body } = await json('/api/games/pokemon/artists/A.%20Artist');
   assert.ok(!body.cards.some((c) => c.id === 's1-2'));
 });
+
+test('a saved artist shows the same cards on the home page, from cache only', async () => {
+  await fetch(`${base}/api/games/pokemon/collections/artist/${encodeURIComponent('A. Artist')}`, { method: 'PUT' });
+  const before = supplementCalls;
+  const { body } = await json('/api/games/pokemon/collections');
+  const mine = body.find((c) => c.id === 'artist:a. artist');
+  // s1-1 (database) and s1-3 (TCGdex); s1-2 was reassigned away in the previous test. s1-3 is owned.
+  assert.deepEqual([mine.progress.cards, mine.progress.cardsOwned], [2, 1]);
+  assert.equal(supplementCalls, before, 'listing saved collections never calls a source');
+});

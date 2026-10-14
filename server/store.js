@@ -1,10 +1,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { isEmptyEntry, isOwned, sanitizeArtist, sanitizeEntry, sanitizeRules } from './collection.js';
+import {
+  isEmptyEntry, isEmptySpeciesMatches, isOwned, sanitizeArtist, sanitizeCollectionRef, sanitizeEntry, sanitizeRules, sanitizeSpeciesMatches,
+} from './collection.js';
 
 // Collection persisted to one JSON file. Writes are serialized and atomic (tmp + rename).
 // Shape: { version, cards: { "game:cardId": entry }, setRules: { "game:setId": rules },
-//          artistOverrides: { "game:cardId": "Artist Name" } }  (for cards the database has no artist for)
+//          speciesMatches: { "game:normalized name": { dex, include, exclude } },
+//          savedCollections: { game: [ { id, type, name } ] },
+//          artistOverrides: { "game:cardId": "Artist Name" } }  (for cards the databases have no artist for)
 //
 // Before the first write of each day, the current file is copied to backups/collection-YYYY-MM-DD.json,
 // so any day's changes can be rolled back. The newest `backupKeep` backups are kept (0 disables).
@@ -27,7 +31,7 @@ export async function createStore(file, { backupKeep = 30, now = () => new Date(
     await Promise.all(old.map((f) => fs.rm(path.join(backupDir, f))));
   }
 
-  let data = { version: 1, cards: {}, setRules: {}, artistOverrides: {} };
+  let data = { version: 1, cards: {}, setRules: {}, speciesMatches: {}, savedCollections: {}, artistOverrides: {} };
   try {
     data = { ...data, ...JSON.parse(await fs.readFile(file, 'utf8')) };
   } catch (err) {
@@ -47,6 +51,8 @@ export async function createStore(file, { backupKeep = 30, now = () => new Date(
     });
     return queue;
   }
+
+  const collectionsWithout = (game, id) => (data.savedCollections[game] ?? []).filter((c) => c.id !== id);
 
   return {
     entriesFor(game, cardIds) {
@@ -103,6 +109,34 @@ export async function createStore(file, { backupKeep = 30, now = () => new Date(
       else delete data.setRules[key];
       await persist();
       return rules;
+    },
+    speciesMatchesFor(game, key) {
+      return data.speciesMatches[`${game}:${key}`] ?? null;
+    },
+    async putSpeciesMatches(game, key, raw) {
+      const id = `${game}:${key}`;
+      const matches = sanitizeSpeciesMatches(raw);
+      if (isEmptySpeciesMatches(matches)) delete data.speciesMatches[id];
+      else data.speciesMatches[id] = matches;
+      await persist();
+      return matches;
+    },
+    collectionsFor(game) {
+      return data.savedCollections[game] ?? [];
+    },
+    // Saving a lookup that is already saved just updates the name you typed.
+    async saveCollection(game, raw) {
+      const ref = sanitizeCollectionRef(raw);
+      if (!ref) throw Object.assign(new Error('A saved collection needs a type (species or artist) and a name'), { status: 400 });
+      data.savedCollections[game] = [...collectionsWithout(game, ref.id), ref];
+      await persist();
+      return data.savedCollections[game];
+    },
+    async removeCollection(game, id) {
+      const list = collectionsWithout(game, id);
+      if (list.length) data.savedCollections[game] = list; else delete data.savedCollections[game];
+      await persist();
+      return list;
     },
     raw: () => data,
   };
