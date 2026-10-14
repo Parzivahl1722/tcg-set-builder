@@ -1,4 +1,4 @@
-import { copyTotals, isOwned, resolveVariants, setProgress } from '/lib/collection.js';
+import { copyTotals, isOwned, normArtist, resolveVariants, setProgress } from '/lib/collection.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const view = $('#view');
@@ -9,6 +9,7 @@ const state = {
   meta: null,
   game: 'pokemon',
   sets: {}, // game -> list
+  collections: {}, // game -> saved Pokémon/artist lookups, with progress
   setsQuery: '',
   startedOnly: false,
   current: null, // { game, set, cards, entries, rules }
@@ -106,6 +107,7 @@ function renderTabs() {
 async function showHome(game, refresh = false) {
   view.replaceChildren(h('p', { class: 'loading' }, 'Loading sets…'));
   if (refresh || !state.sets[game]) state.sets[game] = await api(`/api/games/${game}/sets${refresh ? '?refresh=1' : ''}`);
+  if (!state.collections[game]) state.collections[game] = await api(`/api/games/${game}/collections`);
   renderHome(game);
 }
 
@@ -128,6 +130,25 @@ function renderHome(game) {
   });
 
   const list = h('div', { class: 'set-groups' });
+  const saved = (state.collections[game] ?? []).filter((c) =>
+    (!q || c.name.toLowerCase().includes(q) || 'saved collections'.includes(q)) && (!state.startedOnly || c.progress?.copies));
+  if (saved.length) {
+    list.append(h('section', { class: 'set-group' },
+      h('h2', {}, 'My collections'),
+      h('div', { class: 'set-list' }, saved.map((c) => {
+        const p = c.progress;
+        const label = c.type === 'species' ? 'Master set' : 'Cards';
+        return h('div', { class: 'set-row-wrap' },
+          h('a', { class: 'set-row', href: `#/game/${game}/${c.type === 'species' ? 'species' : 'artist'}/${encodeURIComponent(c.name)}` },
+            h('div', { class: 'set-logo' }, h('span', {}, c.type === 'species' ? '★' : '✎')),
+            h('div', { class: 'set-info' },
+              h('div', { class: 'set-name' }, collectionTitle(c)),
+              h('div', { class: 'set-sub' }, `${c.type === 'species' ? 'Pokémon' : 'Artist'}${p ? ` · ${p.cards} cards` : ''}`),
+              p ? progressBar(p.variantsOwned, p.variants, label) : h('div', { class: 'set-sub muted' }, 'Not opened yet'))),
+          h('button', { class: 'ghost small row-remove', title: 'Remove from home (your cards stay)', 'aria-label': `Remove ${c.name}`,
+            onclick: () => toggleSaved(game, c.type, c.name, true).then(() => showHome(game)).catch((e) => toast(e.message, true)) }, '✕'));
+      }))));
+  }
   function renderHomeList() {
     const keep = document.activeElement === search;
     renderHome(game);
@@ -166,6 +187,45 @@ function renderHome(game) {
   );
 }
 
+// ---------- saved collections ----------
+
+const collectionTitle = (c) => (c.type === 'species' && /^#?\d+$/.test(c.name) ? `Pokédex #${c.name.replace('#', '')}` : c.name);
+
+async function isSaved(game, type, name) {
+  const id = `${type}:${normArtist(name)}`;
+  return (await api(`/api/games/${game}/collections`)).some((c) => c.id === id);
+}
+
+async function toggleSaved(game, type, name, currentlySaved) {
+  await api(`/api/games/${game}/collections/${type}/${encodeURIComponent(name)}`, { method: currentlySaved ? 'DELETE' : 'PUT' });
+  state.collections[game] = null;
+}
+
+// Star button: saves this lookup to the home page list, or removes it.
+function saveButton(game, type, name, saved) {
+  const btn = h('button', { class: 'ghost' });
+  const paint = () => {
+    btn.textContent = saved ? '★ Saved to home' : '☆ Save to home';
+    btn.title = saved ? 'Click to remove it from the home page' : 'Show this on the home page like a set';
+  };
+  paint();
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try {
+      await toggleSaved(game, type, name, saved);
+      saved = !saved;
+      if (type === 'species') speciesView.saved = saved;
+      paint();
+      toast(saved ? 'Saved to the home page' : 'Removed from the home page');
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  return btn;
+}
+
 // ---------- artists ----------
 
 async function showArtists(game) {
@@ -198,6 +258,8 @@ async function showArtist(game, name, refresh = false) {
   view.replaceChildren(h('p', { class: 'loading' }, `Looking up ${name}… (first lookup can take a minute)`));
   const data = await api(`/api/games/${game}/artists/${encodeURIComponent(name)}${refresh ? '?refresh=1' : ''}`);
   const { summary: sm } = data;
+  const artistName = data.cards.find((c) => c.artist?.toLowerCase() === data.artist.toLowerCase())?.artist ?? data.artist;
+  const saved = await isSaved(game, 'artist', artistName);
   const shown = data.cards.filter((c) => artistView.filter === 'all' || (artistView.filter === 'owned') === c.owned);
   const bySet = new Map();
   for (const c of shown) {
@@ -210,7 +272,7 @@ async function showArtist(game, name, refresh = false) {
   view.replaceChildren(
     h('div', { class: 'set-header' },
       h('a', { href: `#/game/${game}/artists`, class: 'back' }, '← Artists'),
-      h('h1', {}, data.cards.find((c) => c.artist?.toLowerCase() === data.artist.toLowerCase())?.artist ?? data.artist),
+      h('h1', {}, artistName),
       sm.cards
         ? h('div', { class: 'stats' },
             progressBar(sm.cardsOwned, sm.cards, 'Cards owned'),
@@ -220,6 +282,7 @@ async function showArtist(game, name, refresh = false) {
     h('div', { class: 'toolbar' },
       h('div', { class: 'segmented' }, filters.map(([id, label]) =>
         h('button', { class: artistView.filter === id ? 'active' : null, onclick: () => { artistView.filter = id; redraw(); } }, label))),
+      sm.cards ? saveButton(game, 'artist', artistName, saved) : null,
       h('button', { class: 'ghost', onclick: () => showArtist(game, name, true).then(() => toast('Artist data refreshed')).catch((e) => toast(e.message, true)) }, 'Refresh from API'),
     ),
     ...[...bySet.values()].map((g) => h('section', { class: 'set-group' },
@@ -252,7 +315,7 @@ async function showSpecies(game, name, refresh = false) {
   if (!refresh && speciesView.data && speciesView.game === game && speciesView.name === name) return renderSpecies();
   view.replaceChildren(h('p', { class: 'loading' }, `Looking up ${name}… (first lookup can take a minute)`));
   const data = await api(`/api/games/${game}/species/${encodeURIComponent(name)}${refresh ? '?refresh=1' : ''}`);
-  Object.assign(speciesView, { game, name, data });
+  Object.assign(speciesView, { game, name, data, saved: await isSaved(game, 'species', name) });
   renderSpecies();
 }
 
@@ -281,6 +344,7 @@ async function toggleSlot(slot) {
     toast(`Not saved: ${err.message}`, true);
   }
   state.sets[game] = null; // progress on the home page is now stale
+  state.collections[game] = null;
   renderSpecies();
 }
 
@@ -408,6 +472,7 @@ function renderSpecies() {
         h('button', { class: speciesView.filter === id ? 'active' : null, onclick: () => redraw(id) }, label))),
       !numericInput ? h('label', { class: 'dex-override', title: 'Wrong Pokémon? Force the National Dex number. Clear it to go back to automatic.' },
         'Dex #', dexInput, h('button', { class: 'small', onclick: saveDex }, 'Set')) : null,
+      slots.length ? saveButton(game, 'species', name, speciesView.saved) : null,
       slots.length ? h('button', { class: 'ghost', onclick: downloadSpeciesPdf }, 'Printable PDF') : null,
       h('button', { class: 'ghost', onclick: () => showSpecies(game, name, true).then(() => toast('Pokémon data refreshed')).catch((e) => toast(e.message, true)) }, 'Refresh from API'),
     ),
@@ -449,6 +514,7 @@ async function showSet(game, setId, refresh = false) {
   if (state.current?.set.id !== data.set.id) { state.filter = 'all'; state.query = ''; }
   state.current = { game, ...data };
   state.sets[game] = null; // progress on the home page is now stale
+  state.collections[game] = null;
   renderSet();
 }
 

@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildPrintable } from './printable.js';
-import { CONDITIONS, GRADERS, copyTotals, sanitizeMatchedCard, isOwned, naturalCompare, normArtist, resolveVariants, setProgress } from './collection.js';
+import { CONDITIONS, GRADERS, copyTotals, sanitizeMatchedCard, sanitizeCollectionRef, isOwned, naturalCompare, normArtist, resolveVariants, setProgress } from './collection.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const DAY = 24 * 60 * 60 * 1000;
@@ -27,6 +27,13 @@ export function createApp({ sources, cache, store, printable = {} }) {
   const getCards = async (s, setId, refresh) => {
     const cards = await cache.get(`${s.id}-set-${setId}`, () => s.fetchCards(setId), { refresh });
     return [...adjust(s, cards)].sort((a, b) => naturalCompare(a.number, b.number));
+  };
+
+  // Cache file for one artist or Pokémon lookup. The same name always maps to the same file.
+  const lookupKey = (s, kind, input, suffix = '') => {
+    const key = normArtist(input);
+    const slug = key.replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+    return `${s.id}-${kind}-${slug}-${crypto.createHash('sha1').update(key).digest('hex').slice(0, 8)}${suffix}`;
   };
 
   const wrap = (fn) => (req, res) =>
@@ -141,9 +148,7 @@ export function createApp({ sources, cache, store, printable = {} }) {
     if (!s) return;
     const key = normArtist(req.params.name);
     if (!key) return res.status(400).json({ error: 'Artist name is required' });
-    const slug = key.replace(/[^a-z0-9]+/g, '-').slice(0, 40);
-    const hash = crypto.createHash('sha1').update(key).digest('hex').slice(0, 8);
-    const found = await cache.get(`${s.id}-artist-${slug}-${hash}`, () => s.fetchCardsByArtist(req.params.name), {
+    const found = await cache.get(lookupKey(s, 'artist', req.params.name), () => s.fetchCardsByArtist(req.params.name), {
       maxAgeMs: 7 * DAY, refresh: req.query.refresh === '1',
     });
     const cards = [...found].sort((a, b) =>
@@ -178,14 +183,16 @@ export function createApp({ sources, cache, store, printable = {} }) {
 
   // One slot per card and variant for one Pokémon. Oldest set first; cards with no dex number (matched by
   // name only) come last. Variants honor each set's rules and each card's hidden/custom variants.
-  async function speciesSlots(s, input, refresh) {
+  // peekOnly: use only what is already cached (null if nothing is), so the home page never waits on the API.
+  async function speciesSlots(s, input, refresh, peekOnly = false) {
     const key = normArtist(input);
     if (!key) return null;
     const matches = store.speciesMatchesFor(s.id, key) ?? { dex: null, include: [], exclude: [] };
-    const slug = key.replace(/[^a-z0-9]+/g, '-').slice(0, 40);
-    const hash = crypto.createHash('sha1').update(key).digest('hex').slice(0, 8);
-    const dexPart = matches.dex != null ? `-d${matches.dex}` : '';
-    const found = await cache.get(`${s.id}-species-${slug}-${hash}${dexPart}`, () => s.fetchCardsBySpecies(input, { dex: matches.dex }), { maxAgeMs: 7 * DAY, refresh });
+    const cacheKey = lookupKey(s, 'species', input, matches.dex != null ? `-d${matches.dex}` : '');
+    const found = peekOnly
+      ? await cache.peek(cacheKey)
+      : await cache.get(cacheKey, () => s.fetchCardsBySpecies(input, { dex: matches.dex }), { maxAgeMs: 7 * DAY, refresh });
+    if (!found) return null;
 
     // Hand-matched cards count as matched (not "no dex") and show even if the lookup didn't return them.
     const manual = new Map(matches.include.map((c) => [c.id, c]));
@@ -257,6 +264,63 @@ export function createApp({ sources, cache, store, printable = {} }) {
     res.setHeader('Content-Disposition', `attachment; filename="${title.replace(/[^\w.-]+/g, '_')}_master_set.pdf"`);
     res.setHeader('X-Missing-Images', String(new Set(missing.map((m) => m.id)).size));
     doc.pipe(res);
+  }));
+
+  // Saved Pokémon and artist lookups, listed on the home page like sets. Progress comes from cached data only;
+  // a lookup that has never loaded has progress null.
+  async function collectionProgress(s, c) {
+    const total = (cards, variants, ownedVariants) => ({ cards: cards.length, cardsOwned: cards.filter((x) => x.owned).length, variants, variantsOwned: ownedVariants });
+    if (c.type === 'species') {
+      const data = await speciesSlots(s, c.name, false, true);
+      if (!data) return null;
+      const byCard = new Map();
+      for (const sl of data.slots) {
+        const e = data.entries[sl.cardId];
+        byCard.set(sl.cardId, { owned: isOwned(e) });
+      }
+      const p = total([...byCard.values()], data.slots.length, data.slots.filter((sl) => data.entries[sl.cardId]?.variants?.[sl.variant]?.length).length);
+      return { ...p, ...sumCopies(byCard.keys(), data.entries) };
+    }
+    const found = await cache.peek(lookupKey(s, 'artist', c.name));
+    if (!found) return null;
+    const entries = store.entriesFor(s.id, found.map((x) => x.id));
+    const p = total(found.map((x) => ({ owned: isOwned(entries[x.id]) })), found.length, found.filter((x) => isOwned(entries[x.id])).length);
+    return { ...p, ...sumCopies(found.map((x) => x.id), entries) };
+  }
+
+  function sumCopies(ids, entries) {
+    const t = { copies: 0, value: 0, paid: 0 };
+    for (const id of ids) {
+      const x = copyTotals(entries[id]);
+      t.copies += x.copies; t.value += x.value; t.paid += x.paid;
+    }
+    return { copies: t.copies, value: Math.round(t.value * 100) / 100, paid: Math.round(t.paid * 100) / 100 };
+  }
+
+  app.get('/api/games/:game/collections', wrap(async (req, res) => {
+    const s = source(req, res);
+    if (!s) return;
+    const out = [];
+    for (const c of store.collectionsFor(s.id)) out.push({ ...c, progress: await collectionProgress(s, c) });
+    res.json(out);
+  }));
+
+  app.put('/api/games/:game/collections/:type/:name', wrap(async (req, res) => {
+    const s = source(req, res);
+    if (!s) return;
+    const ref = sanitizeCollectionRef({ type: req.params.type, name: req.params.name });
+    if (!ref) return res.status(400).json({ error: 'A saved collection needs a type (species or artist) and a name' });
+    const ok = ref.type === 'species' ? typeof s.fetchCardsBySpecies === 'function' : typeof s.fetchCardsByArtist === 'function';
+    if (!ok) return res.status(404).json({ error: `${s.name} has no ${ref.type} lookup` });
+    res.json(await store.saveCollection(s.id, ref));
+  }));
+
+  app.delete('/api/games/:game/collections/:type/:name', wrap(async (req, res) => {
+    const s = source(req, res);
+    if (!s) return;
+    const ref = sanitizeCollectionRef({ type: req.params.type, name: req.params.name });
+    if (!ref) return res.status(400).json({ error: 'A saved collection needs a type (species or artist) and a name' });
+    res.json(await store.removeCollection(s.id, ref.id));
   }));
 
   app.put('/api/games/:game/cards/:cardId', wrap(async (req, res) => {

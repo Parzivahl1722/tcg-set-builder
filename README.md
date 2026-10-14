@@ -47,6 +47,12 @@ On a Mac you can instead double-click `start.command`. It installs dependencies 
 - **Printable PDF** is the same 3x3 sheet as a set, one slot per variant, with the variant printed on a tag at the bottom of each card. A card with two variants prints twice.
 - Results are cached for 7 days (**Refresh from API** forces an update). If the API is down it scans the GitHub data dump, which is slower and has no price data, so it guesses variants from rarity.
 
+### Saved collections
+
+**☆ Save to home** (on any By artist or By Pokémon page) adds that lookup to a **My collections** list at the top of the Pokémon home page, with a progress bar like a set. A Pokémon shows its master-set progress (every variant); an artist shows cards owned. Click a row to open it; **✕** removes it from the list without touching your cards. The list is stored in the collection file (`savedCollections`), so it is in backups and **Export backup**.
+
+Progress on the home page comes only from lookups already cached (even if older than 7 days), so it never waits on the API. A saved lookup that has never loaded shows "Not opened yet" until you open it once.
+
 ### Variants
 
 Where variants come from:
