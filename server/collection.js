@@ -158,6 +158,21 @@ export function parseCardRef(line) {
 export const sameNumber = (a, b) =>
   String(a).replace(/^0+(?=\d)/, '').toLowerCase() === String(b).replace(/^0+(?=\d)/, '').toLowerCase();
 
+// National Dex ranges by generation, for grouping the Pokédex page like the set list groups by series.
+export const GENERATIONS = [
+  { name: 'Generation I · Kanto', from: 1, to: 151 },
+  { name: 'Generation II · Johto', from: 152, to: 251 },
+  { name: 'Generation III · Hoenn', from: 252, to: 386 },
+  { name: 'Generation IV · Sinnoh', from: 387, to: 493 },
+  { name: 'Generation V · Unova', from: 494, to: 649 },
+  { name: 'Generation VI · Kalos', from: 650, to: 721 },
+  { name: 'Generation VII · Alola', from: 722, to: 809 },
+  { name: 'Generation VIII · Galar & Hisui', from: 810, to: 905 },
+  { name: 'Generation IX · Paldea', from: 906, to: 1025 },
+];
+
+export const generationOf = (dex) => GENERATIONS.find((g) => dex >= g.from && dex <= g.to)?.name ?? 'Newer Pokémon';
+
 export function setProgress(cards, entries, rules) {
   const p = { cards: cards.length, cardsOwned: 0, variants: 0, variantsOwned: 0, copies: 0, value: 0, paid: 0 };
   for (const card of cards) {

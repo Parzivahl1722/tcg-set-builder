@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { adjustCard, artistMatches, fetchCardsByArtist, fetchCardsBySpecies, resolveDex, searchCards, selectSpecies, normArtistCard, normCard as pokeCard, pokemonVariants } from '../server/sources/pokemon.js';
+import { adjustCard, artistMatches, parseSpeciesNames, normTcgdexCard, fetchCardsByArtist, fetchCardsBySpecies, resolveDex, searchCards, selectSpecies, normArtistCard, normCard as pokeCard, pokemonVariants } from '../server/sources/pokemon.js';
 import { normCard as lorCard, lorcanaVariants } from '../server/sources/lorcana.js';
 
 test('pokemon variants come from tcgplayer price keys', () => {
@@ -27,8 +27,9 @@ test('pokemon card normalizes API shape', () => {
   assert.deepEqual(c, {
     id: 'sv1-1', number: '1', name: 'Pineco', rarity: 'Common', artist: null,
     image: 'https://images.pokemontcg.io/sv1/1.png', imageLarge: 'https://images.pokemontcg.io/sv1/1_hires.png',
-    variants: ['Normal', 'Reverse Holo'],
+    variants: ['Normal', 'Reverse Holo'], dex: [],
   });
+  assert.deepEqual(pokeCard({ id: 'x', nationalPokedexNumbers: [25, 644] }).dex, [25, 644]);
 });
 
 test('lorcana variants', () => {
@@ -153,13 +154,13 @@ test('a set the Pokémon TCG sources lack is loaded from TCGdex', async (t) => {
     ['api.pokemontcg.io/v2/cards', { totalCount: 0, data: [] }],
     ['tcgdex.net/v2/en/sets/mep', { id: 'mep', cards: [{ id: 'mep-005', localId: '005' }, { id: 'mep-006', localId: '006' }] }],
     ['tcgdex.net/v2/en/sets', [{ id: 'mep', name: 'MEP Black Star Promos' }]],
-    ['tcgdex.net/v2/en/cards/mep-005', { id: 'mep-005', localId: '005', name: 'Drifloon', rarity: 'Promo', illustrator: 'Shimaris Yukichi', image: 'https://a/005', variants: { normal: true, reverse: false, holo: true } }],
+    ['tcgdex.net/v2/en/cards/mep-005', { id: 'mep-005', localId: '005', name: 'Drifloon', rarity: 'Promo', illustrator: 'Shimaris Yukichi', image: 'https://a/005', dexId: [425], variants: { normal: true, reverse: false, holo: true } }],
     ['tcgdex.net/v2/en/cards/mep-006', { id: 'mep-006', localId: '006', name: 'Drifblim', rarity: 'None', variants: [{ type: 'reverse' }] }],
   ]));
   const cards = await fetchCards('mep');
   assert.deepEqual(cards[0], {
     id: 'mep-5', number: '5', name: 'Drifloon', rarity: 'Promo', artist: 'Shimaris Yukichi',
-    image: 'https://a/005/low.webp', imageLarge: 'https://a/005/high.webp', variants: ['Normal', 'Holo'],
+    image: 'https://a/005/low.webp', imageLarge: 'https://a/005/high.webp', variants: ['Normal', 'Holo'], dex: [425],
   });
   assert.deepEqual([cards[1].rarity, cards[1].artist, cards[1].variants], ['Unknown', null, ['Reverse Holo']]);
 });
@@ -304,4 +305,25 @@ test('card search takes partial words, keeps name matches, and falls back to the
   const cards = await searchCards('chu lib');
   assert.match(urls[0], /q=name:"chu lib"/);
   assert.deepEqual(cards.map((c) => [c.id, c.setName]), [['a-1', 'A']]);
+});
+
+test('the Pokédex name list is read from the English rows of the PokeAPI CSV', () => {
+  const csv = [
+    'pokemon_species_id,local_language_id,name,genus',
+    '1,1,フシギダネ,たねポケモン',
+    '1,9,Bulbasaur,Seed Pokémon',
+    '29,9,Nidoran♀,Poison Pin Pokémon',
+    '122,9,Mr. Mime,Barrier Pokémon',
+    '25,9,Pikachu,Mouse Pokémon',
+    '25,5,Pikachu,Pokémon Souris',
+  ].join('\r\n');
+  const list = parseSpeciesNames(csv);
+  assert.deepEqual(list.map((p) => [p.dex, p.name]), [[1, 'Bulbasaur'], [25, 'Pikachu'], [29, 'Nidoran♀'], [122, 'Mr. Mime']]);
+  assert.match(list[1].image, /official-artwork\/25\.png$/);
+  assert.deepEqual(parseSpeciesNames('garbage'), []);
+});
+
+test('TCGdex cards carry their dex numbers', () => {
+  assert.deepEqual(normTcgdexCard({ localId: '005', name: 'Drifloon', dexId: [425] }, 'mep').dex, [425]);
+  assert.deepEqual(normTcgdexCard({ localId: '006', name: 'Boss' }, 'mep').dex, []);
 });

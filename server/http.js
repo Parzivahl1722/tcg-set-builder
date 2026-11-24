@@ -8,3 +8,12 @@ export async function getJson(url, { headers = {}, timeoutMs = 30000 } = {}) {
   if (!res.ok) throw new Error(`GET ${url} failed: ${res.status} ${res.statusText}`);
   return res.json();
 }
+
+export async function getText(url, { headers = {}, timeoutMs = 30000 } = {}) {
+  const res = await fetch(url, {
+    headers: { 'User-Agent': USER_AGENT, ...headers },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) throw new Error(`GET ${url} failed: ${res.status} ${res.statusText}`);
+  return res.text();
+}

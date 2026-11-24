@@ -1,4 +1,4 @@
-import { copyTotals, isOwned, normArtist, resolveVariants, setProgress } from '/lib/collection.js';
+import { GENERATIONS, copyTotals, generationOf, isOwned, normArtist, resolveVariants, setProgress } from '/lib/collection.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const view = $('#view');
@@ -87,6 +87,7 @@ async function route() {
     else if (parts[0] === 'game' && parts[2] === 'artist' && parts[3]) await showArtist(parts[1], parts[3]);
     else if (parts[0] === 'game' && parts[2] === 'species' && parts[3]) await showSpecies(parts[1], parts[3]);
     else if (parts[0] === 'game' && parts[2] === 'species') showSpeciesSearch(parts[1]);
+    else if (parts[0] === 'game' && parts[2] === 'pokedex') await showPokedex(parts[1]);
     else await showHome(state.game);
   } catch (err) {
     view.replaceChildren(h('div', { class: 'error-box' },
@@ -182,6 +183,7 @@ function renderHome(game) {
       h('button', { class: 'ghost', onclick: () => showHome(game, true).catch((e) => toast(e.message, true)) }, 'Refresh set list'),
       state.meta.games.find((g) => g.id === game)?.artists ? h('a', { class: 'button-link', href: `#/game/${game}/artists` }, 'By artist') : null,
       state.meta.games.find((g) => g.id === game)?.species ? h('a', { class: 'button-link', href: `#/game/${game}/species` }, 'By Pokémon') : null,
+      state.meta.games.find((g) => g.id === game)?.pokedex ? h('a', { class: 'button-link', href: `#/game/${game}/pokedex` }, 'Pokédex') : null,
     ),
     list,
   );
@@ -551,6 +553,82 @@ function renderSpecies() {
       })),
     )),
   );
+}
+
+// ---------- Pokédex: one slot per Pokémon, filled in by any card you own ----------
+
+const pokedexView = { filter: 'all', query: '', game: null, data: null };
+
+async function showPokedex(game, refresh = false) {
+  view.replaceChildren(h('p', { class: 'loading' }, 'Building your Pokédex… (the first time, sets saved before this feature are refreshed once, which can take a minute)'));
+  const data = await api(`/api/games/${game}/pokedex${refresh ? '?refresh=1' : ''}`);
+  Object.assign(pokedexView, { game, data });
+  ext = null;
+  renderPokedex();
+}
+
+const dexNumber = (n) => `#${String(n).padStart(3, '0')}`;
+
+function dexTile(game, p) {
+  const have = p.owned > 0;
+  // Owned: the card you hold, in color. Missing: the Pokémon's artwork, grayed out.
+  const art = have ? cardImage({ ...p.card, name: p.name }) : cardImage({ image: p.image, number: p.dex, name: p.name });
+  return h('div', { class: `tile ${have ? 'complete' : 'missing'}`, 'data-dex': p.dex },
+    h('a', { class: 'art', href: `#/game/${game}/species/${p.dex}`, title: have ? `${p.name}: ${p.owned} card${p.owned > 1 ? 's' : ''} owned. Open its master set` : `${p.name}: missing. Open its master set` },
+      art, have ? h('span', { class: 'badge' }, p.owned > 1 ? `×${p.owned}` : '✓') : null),
+    h('div', { class: 'meta' }, h('span', { class: 'num' }, dexNumber(p.dex)), h('span', { class: 'name', title: p.name }, p.name)),
+    h('div', { class: 'set-sub' }, have ? `${p.card.setName} ${p.card.number ? `#${p.card.number}` : ''}` : 'Missing'));
+}
+
+function renderPokedex() {
+  const { game, data } = pokedexView;
+  const filters = [['all', 'All'], ['owned', 'Owned'], ['missing', 'Missing']];
+  const search = h('input', {
+    type: 'search', placeholder: 'Name or number…', value: pokedexView.query,
+    oninput: (e) => { pokedexView.query = e.target.value; renderPokedexGroups(); },
+  });
+  show(
+    h('div', { class: 'set-header' },
+      h('a', { href: `#/game/${game}`, class: 'back' }, '← All sets'),
+      h('h1', {}, 'Pokédex'),
+      h('div', { class: 'stats' },
+        progressBar(data.ownedSpecies, data.total, 'Pokémon collected'),
+        h('div', { class: 'stat-line' }, h('span', {}, `${data.total - data.ownedSpecies} still needed`), h('span', {}, `${data.ownedCards} cards counted`))),
+    ),
+    h('div', { class: 'toolbar' },
+      h('div', { class: 'segmented' }, filters.map(([id, label]) =>
+        h('button', { class: pokedexView.filter === id ? 'active' : null, onclick: () => { pokedexView.filter = id; renderPokedex(); } }, label))),
+      search,
+      h('button', { class: 'ghost', onclick: () => showPokedex(game, true).then(() => toast('Pokédex refreshed')).catch((e) => toast(e.message, true)) }, 'Refresh from API'),
+    ),
+    data.notices.length ? h('div', { class: 'notice' }, data.notices.map((n) => h('p', {}, n))) : null,
+    h('div', { id: 'dex-groups' }),
+  );
+  renderPokedexGroups();
+}
+
+function renderPokedexGroups() {
+  const { game, data } = pokedexView;
+  const q = pokedexView.query.trim().toLowerCase().replace(/^#/, '');
+  // A number finds that dex entry only (25 is Pikachu, not also Celebi #251); anything else matches names.
+  const matches = (p) => !q || (/^\d+$/.test(q) ? p.dex === Number(q) : p.name.toLowerCase().includes(q));
+  const groups = new Map();
+  for (const p of data.species) {
+    const key = generationOf(p.dex);
+    if (!groups.has(key)) groups.set(key, { all: [], shown: [] });
+    const g = groups.get(key);
+    g.all.push(p);
+    if (matches(p) && (pokedexView.filter === 'all' || (pokedexView.filter === 'owned') === p.owned > 0)) g.shown.push(p);
+  }
+  const order = [...GENERATIONS.map((g) => g.name), 'Newer Pokémon'];
+  const sections = order.filter((name) => groups.get(name)?.shown.length).map((name) => {
+    const g = groups.get(name);
+    const owned = g.all.filter((p) => p.owned > 0).length;
+    return h('section', { class: 'set-group' },
+      h('h2', {}, name, h('span', { class: 'muted' }, ` · ${owned}/${g.all.length}`)),
+      h('div', { class: 'grid' }, g.shown.map((p) => dexTile(game, p))));
+  });
+  $('#dex-groups').replaceChildren(...(sections.length ? sections : [h('p', { class: 'muted' }, 'Nothing here.')]));
 }
 
 // ---------- set view ----------

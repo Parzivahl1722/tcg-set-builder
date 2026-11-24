@@ -53,6 +53,16 @@ On a Mac you can instead double-click `start.command`. It installs dependencies 
 - **Printable PDF** is the same 3x3 sheet as a set, one slot per variant, with the variant printed on a tag at the bottom of each card. A card with two variants prints twice.
 - Results are cached for 7 days (**Refresh from API** forces an update). If the API is down it scans the GitHub data dump, which is slower and has no price data, so it guesses variants from rarity.
 
+### Pokédex (Pokémon)
+
+**Pokédex** on the Pokémon set list shows all 1,025 National Dex entries in order, grouped by generation, one tile per Pokémon. It fills in by itself as you collect: a Pokémon you own a card of shows that card in color with a ✓ (or `×3` for three different cards); one you don't shows its official artwork grayed out, labeled "Missing". Each generation heading shows its own progress. Filter by All, Owned or Missing, or search by name or number (`25` finds Pikachu only). Click a tile to open that Pokémon's master-set page.
+
+- A Pokémon counts as owned when you hold **any card that lists its dex number**, whatever the set or variant. Cards with two Pokémon (Pikachu & Zekrom-GX) fill in both. When you own several cards of one Pokémon, the tile shows the one from the oldest set.
+- It reads the National Dex numbers on cards, so it only needs the sets you actually own cards in. Sets cached before this feature existed are refreshed once, automatically, the first time you open the page (can take a minute).
+- Owned cards that can't be placed are reported at the top, not dropped: Trainers, Energy and the few Pokémon the database never numbered have no dex number, and a set that fails to load is named.
+- The name list and artwork come from [PokeAPI](https://github.com/PokeAPI/pokeapi)'s published data on GitHub, cached for 30 days (**Refresh from API** forces an update).
+- It counts species, not forms: Alolan Vulpix and Vulpix are both #037, so either card fills the slot. Corrections you make with **Match** or **Dex #** on a Pokémon's page do not feed the Pokédex.
+
 ### Saved collections
 
 **☆ Save to home** (on any By artist or By Pokémon page) adds that lookup to a **My collections** list at the top of the Pokémon home page, with a progress bar like a set. A Pokémon shows its master-set progress (every variant); an artist shows cards owned. Click a row to open it; **✕** removes it from the list without touching your cards. The list is stored in the collection file (`savedCollections`), so it is in backups and **Export backup**.

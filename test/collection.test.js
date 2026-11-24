@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { naturalCompare, resolveVariants, sanitizeCopy, sanitizeEntry, sanitizeRules, setProgress } from '../server/collection.js';
+import { GENERATIONS, generationOf, naturalCompare, resolveVariants, sanitizeCopy, sanitizeEntry, sanitizeRules, setProgress } from '../server/collection.js';
 
 const common = { id: 'a', number: '1', rarity: 'Common', variants: ['Normal', 'Reverse Holo'] };
 const ex = { id: 'b', number: '2', rarity: 'Double Rare', variants: ['Holo'] };
@@ -62,4 +62,13 @@ test('parseCardRef reads pasted card references', async () => {
   assert.equal(parseCardRef('garbage'), null);
   assert.ok(sameNumber('091', '91') && sameNumber('tg01', 'TG01') && !sameNumber('91', '19'));
   assert.ok(artistMatches('A, Shimaris Yukichi', 'shimaris  yukichi'));
+});
+
+test('generations cover the National Dex without gaps or overlap', () => {
+  assert.equal(GENERATIONS[0].from, 1);
+  for (let i = 1; i < GENERATIONS.length; i++) assert.equal(GENERATIONS[i].from, GENERATIONS[i - 1].to + 1);
+  assert.equal(generationOf(25), 'Generation I · Kanto');
+  assert.equal(generationOf(152), 'Generation II · Johto');
+  assert.equal(generationOf(1025), 'Generation IX · Paldea');
+  assert.equal(generationOf(1026), 'Newer Pokémon');
 });

@@ -1,4 +1,4 @@
-import { getJson } from '../http.js';
+import { getJson, getText } from '../http.js';
 import { artistMatches, normArtist } from '../collection.js';
 import * as tcgdex from './tcgdex.js';
 
@@ -71,6 +71,8 @@ export function normCard(c) {
     image: c.images?.small ?? null,
     imageLarge: c.images?.large ?? null,
     variants: pokemonVariants(c),
+    // National Dex numbers, so the Pokédex page can tell which Pokémon a card is. Trainers and Energy have none.
+    dex: c.nationalPokedexNumbers ?? [],
   };
 }
 
@@ -214,6 +216,7 @@ export function normTcgdexCard(c, setId) {
     image: tcgdex.imageUrl(c.image, 'low'),
     imageLarge: tcgdex.imageUrl(c.image, 'high'),
     variants: variants.length ? variants : pokemonVariants({ rarity }),
+    dex: Array.isArray(c.dexId) ? c.dexId : [],
   };
 }
 
@@ -382,6 +385,29 @@ export async function searchCards(text) {
   }
 }
 
+// PokeAPI publishes its data as CSV on GitHub. English names come with the right punctuation (Nidoran♀, Mr. Mime,
+// Type: Null), and raw.githubusercontent.com is already something this app depends on.
+const SPECIES_NAMES = 'https://raw.githubusercontent.com/PokeAPI/pokeapi/master/data/v2/csv/pokemon_species_names.csv';
+const ARTWORK = 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork';
+const ENGLISH = 9; // local_language_id
+
+// "species id,language id,name,genus" rows -> [{ dex, name, image }] in dex order.
+export function parseSpeciesNames(csv) {
+  const out = new Map();
+  for (const line of String(csv).split(/\r?\n/)) {
+    const m = line.match(/^(\d+),(\d+),([^,]+),/);
+    if (m && Number(m[2]) === ENGLISH) out.set(Number(m[1]), { dex: Number(m[1]), name: m[3].trim(), image: `${ARTWORK}/${m[1]}.png` });
+  }
+  return [...out.values()].sort((a, b) => a.dex - b.dex);
+}
+
+// Every Pokémon in National Dex order, for the Pokédex page.
+export async function fetchPokedex() {
+  const list = parseSpeciesNames(await getText(SPECIES_NAMES, { timeoutMs: 60000 }));
+  if (!list.length) throw new Error('the Pokémon name list was empty');
+  return list;
+}
+
 export default {
-  id: 'pokemon', name: 'Pokémon', fetchSets, fetchCards, fetchCardsByArtist, fetchSupplementCardsByArtist, fetchCardsBySpecies, searchCards, adjustCard,
+  id: 'pokemon', name: 'Pokémon', fetchSets, fetchCards, fetchCardsByArtist, fetchSupplementCardsByArtist, fetchCardsBySpecies, searchCards, adjustCard, fetchPokedex,
 };

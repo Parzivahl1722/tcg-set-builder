@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildPrintable } from './printable.js';
+import { mapLimit } from './sources/tcgdex.js';
 import {
   CONDITIONS, GRADERS, artistMatches, copyTotals, isOwned, naturalCompare, normArtist, parseCardRef, resolveVariants, sameNumber,
   sanitizeCollectionRef, sanitizeMatchedCard, setProgress,
@@ -47,7 +48,7 @@ export function createApp({ sources, cache, store, printable = {} }) {
 
   app.get('/api/meta', (req, res) => {
     res.json({
-      games: Object.values(sources).map((s) => ({ id: s.id, name: s.name, artists: typeof s.fetchCardsByArtist === 'function', species: typeof s.fetchCardsBySpecies === 'function' })),
+      games: Object.values(sources).map((s) => ({ id: s.id, name: s.name, artists: typeof s.fetchCardsByArtist === 'function', species: typeof s.fetchCardsBySpecies === 'function', pokedex: typeof s.fetchPokedex === 'function' })),
       conditions: CONDITIONS,
       graders: GRADERS,
     });
@@ -379,6 +380,67 @@ export function createApp({ sources, cache, store, printable = {} }) {
     res.setHeader('Content-Disposition', `attachment; filename="${title.replace(/[^\w.-]+/g, '_')}_master_set.pdf"`);
     res.setHeader('X-Missing-Images', String(new Set(missing.map((m) => m.id)).size));
     doc.pipe(res);
+  }));
+
+  // The National Pokédex: every Pokémon, and which you own a card of. A Pokémon is owned when you hold any card
+  // that lists its dex number (multi-Pokémon cards count for each), the same rule the by-Pokémon page uses.
+  // Card data cached before dex numbers were stored is refreshed once, here, for just the sets you own cards in.
+  app.get('/api/games/:game/pokedex', wrap(async (req, res) => {
+    const s = source(req, res);
+    if (!s) return;
+    if (typeof s.fetchPokedex !== 'function') return res.status(404).json({ error: `${s.name} has no Pokédex` });
+    const list = await cache.get(`${s.id}-pokedex`, () => s.fetchPokedex(), { maxAgeMs: 30 * DAY, refresh: req.query.refresh === '1' });
+    const sets = (await getSets(s, false).catch(() => [])) ?? [];
+
+    const bySet = new Map();
+    for (const id of store.ownedIds(s.id)) {
+      const setId = id.includes('-') ? id.slice(0, id.indexOf('-')) : id;
+      if (!bySet.has(setId)) bySet.set(setId, new Set());
+      bySet.get(setId).add(id);
+    }
+
+    const notices = [];
+    const holders = new Map(); // dex -> owned cards of that Pokémon
+    let ownedCards = 0;
+    let noDex = 0;
+    const outsideList = new Set();
+    await mapLimit([...bySet], 4, async ([setId, ids]) => {
+      const set = sets.find((x) => x.id === setId);
+      const label = set?.name ?? setId;
+      let cards;
+      try {
+        cards = await getCards(s, setId, false);
+        if (cards.length && !('dex' in cards[0])) cards = await getCards(s, setId, true);
+      } catch (err) {
+        notices.push(`${ids.size} owned card(s) in ${label} couldn’t be placed: ${err.message}`);
+        return;
+      }
+      if (cards.length && !('dex' in cards[0])) {
+        notices.push(`${ids.size} owned card(s) in ${label} couldn’t be placed because that set’s card data has no Pokédex numbers and refreshing it failed. Try again, or use “Refresh cards” on the set.`);
+        return;
+      }
+      for (const c of cards) {
+        if (!ids.has(c.id)) continue;
+        ownedCards++;
+        if (!c.dex?.length) { noDex++; continue; }
+        for (const dex of c.dex) {
+          if (!holders.has(dex)) holders.set(dex, []);
+          holders.get(dex).push({ id: c.id, name: c.name, number: c.number, image: c.image, imageLarge: c.imageLarge, setId, setName: label, releaseDate: set?.releaseDate ?? null });
+        }
+      }
+    });
+
+    const known = new Set(list.map((p) => p.dex));
+    for (const dex of holders.keys()) if (!known.has(dex)) outsideList.add(dex);
+    const species = list.map((p) => {
+      const cards = (holders.get(p.dex) ?? []).sort((a, b) => (a.releaseDate ?? '9999').localeCompare(b.releaseDate ?? '9999') || naturalCompare(a.number, b.number));
+      return { ...p, owned: cards.length, card: cards[0] ?? null };
+    });
+    if (noDex) notices.push(`${noDex} owned card(s) have no Pokédex number in the database (Trainers, Energy, and a few Pokémon it never numbered), so they aren’t counted here.`);
+    if (outsideList.size) notices.push(`${outsideList.size} Pokémon your cards list aren’t on the name list yet (${[...outsideList].sort((a, b) => a - b).join(', ')}). Use “Refresh from API” to update it.`);
+    // Notices from parallel loads arrive in any order.
+    notices.sort();
+    res.json({ total: species.length, ownedSpecies: species.filter((p) => p.owned).length, ownedCards, species, notices });
   }));
 
   // Saved Pokémon and artist lookups, listed on the home page like sets. Progress comes from cached data only;

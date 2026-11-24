@@ -21,11 +21,13 @@ const fake = {
   async fetchCards(setId) {
     calls.cards++;
     if (failFetch) throw new Error('API down');
+    // 'stale1' stands in for a set cached before dex numbers were stored: its cache file is written by hand below.
+    if (setId === 'stale1') return [{ id: 'stale1-7', number: '7', name: 'Squirtle', rarity: 'Common', image: 'https://img.test/s7.png', imageLarge: null, variants: ['Normal'], dex: [7] }];
     assert.equal(setId, 'sv1');
     return [
-      { id: 'sv1-10', number: '10', name: 'Ten', rarity: 'Common', image: null, imageLarge: null, variants: ['Normal', 'Reverse Holo'] },
-      { id: 'sv1-2', number: '2', name: 'Two', rarity: 'Common', image: null, imageLarge: null, variants: ['Normal', 'Reverse Holo'] },
-      { id: 'sv1-200', number: '200', name: 'Big', rarity: 'Special Illustration Rare', image: null, imageLarge: null, variants: ['Holo'] },
+      { id: 'sv1-10', number: '10', name: 'Ten', rarity: 'Common', image: null, imageLarge: null, variants: ['Normal', 'Reverse Holo'], dex: [] },
+      { id: 'sv1-2', number: '2', name: 'Two', rarity: 'Common', image: 'https://img.test/2.png', imageLarge: null, variants: ['Normal', 'Reverse Holo'], dex: [25] },
+      { id: 'sv1-200', number: '200', name: 'Big', rarity: 'Special Illustration Rare', image: null, imageLarge: null, variants: ['Holo'], dex: [6, 25] },
     ];
   },
 };
@@ -56,6 +58,11 @@ fake.fetchCardsBySpecies = async (name, opts = {}) => {
     card('nodex-1', '5', 'zz', 'Odd Set', '2015-01-01', [], { name: 'Pikachu Libre', variants: ['Normal'] }),
     card('old-1', '1', 'old', 'Old Set', '2010-01-01', [25], { variants: ['Normal'] }),
   ];
+};
+
+fake.fetchPokedex = async () => {
+  calls.pokedex = (calls.pokedex ?? 0) + 1;
+  return [[6, 'Charizard'], [7, 'Squirtle'], [25, 'Pikachu'], [26, 'Raichu']].map(([dex, name]) => ({ dex, name, image: `https://art.test/${dex}.png` }));
 };
 
 const json = async (url, opts = {}) => {
@@ -347,4 +354,63 @@ test('saved collections reject bad types and blank names, and unsupported games'
   assert.equal((await json('/api/games/pokemon/collections/set/x', { method: 'PUT' })).status, 400);
   assert.equal((await json('/api/games/pokemon/collections/species/%20', { method: 'PUT' })).status, 400);
   assert.equal((await json('/api/games/mtg/collections')).status, 404);
+});
+
+test('the Pokédex marks a Pokémon owned when any card lists its dex number', async () => {
+  // Start from a known state: only sv1-2 (Pikachu) owned.
+  for (const id of ['sv1-3', 'sv1-10', 'sv1-200']) await json(`/api/games/pokemon/cards/${id}`, { method: 'PUT', body: JSON.stringify({ variants: {} }) });
+  await json('/api/games/pokemon/cards/sv1-2', { method: 'PUT', body: JSON.stringify({ variants: { Normal: [{}] } }) });
+
+  let { status, body } = await json('/api/games/pokemon/pokedex');
+  assert.equal(status, 200);
+  assert.deepEqual(body.species.map((p) => [p.dex, p.name, p.owned]), [[6, 'Charizard', 0], [7, 'Squirtle', 0], [25, 'Pikachu', 1], [26, 'Raichu', 0]]);
+  assert.deepEqual([body.total, body.ownedSpecies, body.ownedCards], [4, 1, 1]);
+  assert.equal(body.species[2].card.id, 'sv1-2');
+  assert.equal(body.species[2].card.setName, 'Scarlet & Violet');
+  assert.equal(body.species[0].card, null);
+  assert.deepEqual(body.notices, []);
+
+  // A card listing two Pokémon fills in both; a card with no dex number is counted in a notice, not placed.
+  await json('/api/games/pokemon/cards/sv1-200', { method: 'PUT', body: JSON.stringify({ variants: { Holo: [{}] } }) });
+  await json('/api/games/pokemon/cards/sv1-10', { method: 'PUT', body: JSON.stringify({ variants: { Normal: [{}] } }) });
+  ({ body } = await json('/api/games/pokemon/pokedex'));
+  assert.deepEqual(body.species.map((p) => p.owned), [1, 0, 2, 0]);
+  assert.equal(body.species[2].card.id, 'sv1-2', 'the oldest-numbered card of the Pokémon represents it');
+  assert.equal(body.ownedSpecies, 2);
+  assert.equal(body.ownedCards, 3);
+  assert.match(body.notices.join(), /1 owned card\(s\) have no Pokédex number/);
+
+  assert.equal(calls.pokedex, 1, 'the name list is cached after the first load');
+  await json('/api/games/pokemon/pokedex?refresh=1');
+  assert.equal(calls.pokedex, 2);
+});
+
+test('the Pokédex refreshes cached sets that predate dex numbers, once', async () => {
+  const file = path.join(dir, 'cache', 'pokemon-set-stale1.json');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, JSON.stringify({ fetchedAt: Date.now(), data: [{ id: 'stale1-7', number: '7', name: 'Squirtle', rarity: 'Common', image: null, variants: ['Normal'] }] }));
+  await json('/api/games/pokemon/cards/stale1-7', { method: 'PUT', body: JSON.stringify({ variants: { Normal: [{}] } }) });
+
+  const before = calls.cards;
+  const { body } = await json('/api/games/pokemon/pokedex');
+  assert.equal(body.species.find((p) => p.dex === 7).owned, 1);
+  assert.equal(body.species.find((p) => p.dex === 7).card.image, 'https://img.test/s7.png');
+  assert.equal(calls.cards, before + 1);
+  await json('/api/games/pokemon/pokedex');
+  assert.equal(calls.cards, before + 1, 'the refreshed set is cached with dex numbers');
+});
+
+test('the Pokédex reports owned cards it cannot place instead of dropping them silently', async () => {
+  // old-1 is in a set the fake source cannot load.
+  await json('/api/games/pokemon/cards/old-1', { method: 'PUT', body: JSON.stringify({ variants: { Normal: [{}] } }) });
+  const { status, body } = await json('/api/games/pokemon/pokedex');
+  assert.equal(status, 200);
+  assert.ok(body.notices.some((n) => /1 owned card\(s\) in old couldn’t be placed/.test(n)), body.notices.join('\n'));
+  await json('/api/games/pokemon/cards/old-1', { method: 'PUT', body: JSON.stringify({ variants: {} }) });
+});
+
+test('the Pokédex is only offered for games that have one', async () => {
+  assert.equal((await json('/api/games/mtg/pokedex')).status, 404);
+  const meta = await json('/api/meta');
+  assert.equal(meta.body.games[0].pokedex, true);
 });
